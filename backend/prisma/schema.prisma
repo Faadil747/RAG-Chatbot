@@ -43,11 +43,29 @@ model Candidate {
 
   resumeText String @db.Text
 
+  jobId             String?
+  job               Job?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  jobMatchScore     Float?
+  jobMatchBreakdown Json?
+
   @@index([uploadedAt])
   @@index([location])
   @@index([currentRole])
   @@index([availability])
   @@index([totalExperienceYears])
+  @@index([jobId])
+}
+
+model Job {
+  id          String   @id @default(uuid())
+  title       String
+  description String   @db.Text
+  intent      Json
+  createdAt   DateTime @default(now())
+
+  candidates Candidate[]
+
+  @@index([createdAt])
 }
 
 model ChatSession {

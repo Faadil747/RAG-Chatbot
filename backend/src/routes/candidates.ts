@@ -8,6 +8,7 @@ router.post("/candidates/upload", uploadResumes.array("files"), candidatesContro
 router.get("/candidates", candidatesController.listCandidates);
 router.get("/candidates/:id", candidatesController.getCandidateById);
 router.get("/candidates/:id/resume", candidatesController.downloadResume);
+router.patch("/candidates/:id/job", candidatesController.reassignCandidateJob);
 router.delete("/candidates/:id", candidatesController.deleteCandidate);
 
 export default router;

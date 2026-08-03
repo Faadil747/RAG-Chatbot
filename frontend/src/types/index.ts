@@ -12,6 +12,9 @@ export interface CandidateSummary {
   overallRating: number;
   uploadedAt: string;
   availability: string;
+  jobId: string | null;
+  jobTitle: string | null;
+  jobMatchScore: number | null;
 }
 
 export interface Experience {
@@ -60,6 +63,7 @@ export interface Candidate extends CandidateSummary {
   suitableRoles: string[];
   technologyStack: string[];
   resumeText: string;
+  jobMatchBreakdown: ScoreBreakdown | null;
 }
 
 export interface ScoreBreakdown {
@@ -70,6 +74,31 @@ export interface ScoreBreakdown {
   educationMatch: number;
   technologyMatch: number;
   freshnessScore: number;
+}
+
+export interface JobIntent {
+  designation: string | null;
+  requiredSkills: string[];
+  minExperience: number | null;
+  maxExperience: number | null;
+  location: string | null;
+  industry: string | null;
+  education: string | null;
+  availability: string | null;
+  keywords: string[];
+}
+
+export interface Job {
+  id: string;
+  title: string;
+  description: string;
+  intent: JobIntent;
+  createdAt: string;
+  candidateCount?: number;
+}
+
+export interface JobListResponse {
+  jobs: Job[];
 }
 
 export interface Justification {

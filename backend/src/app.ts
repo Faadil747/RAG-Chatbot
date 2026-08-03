@@ -6,6 +6,7 @@ import healthRouter from "./routes/health";
 import candidatesRouter from "./routes/candidates";
 import searchRouter from "./routes/search";
 import chatRouter from "./routes/chat";
+import jobsRouter from "./routes/jobs";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 
 export function createApp(): Express {
@@ -20,6 +21,7 @@ export function createApp(): Express {
   app.use("/api", candidatesRouter);
   app.use("/api", searchRouter);
   app.use("/api", chatRouter);
+  app.use("/api", jobsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Briefcase,
@@ -13,6 +14,7 @@ import {
   MessageSquareText,
   Phone,
   ShieldCheck,
+  Sparkles,
   ThumbsDown,
   ThumbsUp,
 } from 'lucide-react';
@@ -25,10 +27,12 @@ import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { RadialProgress } from '@/components/ui/progress';
 import { ExperienceTimeline } from '@/components/candidate/ExperienceTimeline';
+import { JustificationPanel } from '@/components/search/JustificationPanel';
 import { useCandidateProfileStore } from '@/store/candidateProfileStore';
 import { useCandidate } from '@/hooks/useCandidate';
-import { getResumeDownloadUrl } from '@/lib/api';
-import { getScoreBand } from '@/lib/utils';
+import { getJob, getResumeDownloadUrl, getSearchAnalysis, ApiError } from '@/lib/api';
+import { cn, getScoreBand } from '@/lib/utils';
+import type { Justification } from '@/types';
 
 const scoreColorClass: Record<ReturnType<typeof getScoreBand>, string> = {
   high: 'text-success',
@@ -41,6 +45,29 @@ export function CandidateProfileSheet() {
   const closeProfile = useCandidateProfileStore((s) => s.closeProfile);
   const { candidate, isLoading, error } = useCandidate(openCandidateId);
   const navigate = useNavigate();
+
+  const [justification, setJustification] = useState<Justification | null>(null);
+  const [justificationLoading, setJustificationLoading] = useState(false);
+  const [justificationError, setJustificationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setJustification(null);
+    setJustificationError(null);
+  }, [openCandidateId]);
+
+  async function loadJustification(jobId: string, candidateId: string) {
+    setJustificationLoading(true);
+    setJustificationError(null);
+    try {
+      const job = await getJob(jobId);
+      const result = await getSearchAnalysis(job.description, candidateId);
+      setJustification(result);
+    } catch (err) {
+      setJustificationError(err instanceof ApiError ? err.message : 'Failed to load analysis.');
+    } finally {
+      setJustificationLoading(false);
+    }
+  }
 
   return (
     <Sheet open={!!openCandidateId} onOpenChange={(open) => !open && closeProfile()}>
@@ -105,6 +132,42 @@ export function CandidateProfileSheet() {
                 Uploaded {formatDistanceToNow(new Date(candidate.uploadedAt), { addSuffix: true })}
               </Badge>
             </div>
+
+            {/* Job fit */}
+            {candidate.jobId && candidate.jobTitle && (
+              <div className="rounded-xl border border-primary/20 bg-primary/[0.04] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">Scored against</p>
+                    <p className="text-sm font-semibold">{candidate.jobTitle}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {candidate.jobMatchScore !== null && (
+                      <span
+                        className={cn(
+                          'text-lg font-bold tabular-nums',
+                          scoreColorClass[getScoreBand(candidate.jobMatchScore)]
+                        )}
+                      >
+                        {Math.round(candidate.jobMatchScore)}
+                        <span className="text-xs font-normal text-muted-foreground">/100 fit</span>
+                      </span>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={justificationLoading}
+                      onClick={() => loadJustification(candidate.jobId as string, candidate.id)}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {justificationLoading ? 'Analyzing...' : 'Why this score?'}
+                    </Button>
+                  </div>
+                </div>
+                {justificationError && <p className="mt-2 text-xs text-destructive">{justificationError}</p>}
+                {justification && <JustificationPanel justification={justification} />}
+              </div>
+            )}
 
             {/* Contact links */}
             <div className="flex flex-wrap gap-2">

@@ -5,6 +5,8 @@ import { ApiError } from "../utils/ApiError";
 import {
   ChatResponse,
   Justification,
+  JobIntent,
+  JobMatchBreakdown,
   ParsedCandidate,
   SearchResponse,
 } from "../types/candidate";
@@ -108,6 +110,30 @@ export async function searchAnalysis(
     return data;
   } catch (err) {
     throw toApiError(err, "/ai/search/analysis");
+  }
+}
+
+export async function parseJobDescription(description: string): Promise<JobIntent> {
+  try {
+    const { data } = await client.post<JobIntent>("/ai/jobs/parse", { description });
+    return data;
+  } catch (err) {
+    throw toApiError(err, "/ai/jobs/parse");
+  }
+}
+
+export async function scoreCandidateForJob(
+  candidate: unknown,
+  intent: JobIntent
+): Promise<{ matchScore: number; breakdown: JobMatchBreakdown }> {
+  try {
+    const { data } = await client.post<{ matchScore: number; breakdown: JobMatchBreakdown }>(
+      "/ai/jobs/score",
+      { candidate, intent }
+    );
+    return data;
+  } catch (err) {
+    throw toApiError(err, "/ai/jobs/score");
   }
 }
 

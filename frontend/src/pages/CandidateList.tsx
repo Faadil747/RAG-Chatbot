@@ -265,14 +265,28 @@ export default function CandidateList() {
                       <span className="font-medium text-foreground hover:underline">{candidate.name}</span>
                     </button>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{candidate.currentRole}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {candidate.currentRole}
+                    {candidate.jobTitle && (
+                      <Badge variant="accent" className="ml-2 font-normal">
+                        {candidate.jobTitle}
+                      </Badge>
+                    )}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{candidate.totalExperienceYears} yrs</TableCell>
                   <TableCell>
                     <SkillBadges skills={candidate.topSkills} max={3} />
                   </TableCell>
                   <TableCell className="text-muted-foreground">{candidate.location}</TableCell>
                   <TableCell>
-                    <ScoreBadge score={candidate.overallRating} />
+                    <div className="flex flex-col gap-1">
+                      <ScoreBadge score={candidate.overallRating} size="sm" />
+                      {candidate.jobMatchScore !== null && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {Math.round(candidate.jobMatchScore)}/100 job fit
+                        </span>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {formatDistanceToNow(new Date(candidate.uploadedAt), { addSuffix: true })}

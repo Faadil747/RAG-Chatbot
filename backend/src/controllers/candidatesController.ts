@@ -8,7 +8,7 @@ import { env } from "../config/env";
 import { ApiError } from "../utils/ApiError";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ALLOWED_EXTENSIONS } from "../middleware/upload";
-import { CandidateSummary } from "../types/candidate";
+import { CandidateSummary, JobIntent } from "../types/candidate";
 import { formatErrorMessage } from "../utils/formatError";
 
 function toSummary(candidate: {
@@ -22,6 +22,9 @@ function toSummary(candidate: {
   overallRating: number;
   uploadedAt: Date;
   availability: string;
+  jobId: string | null;
+  jobMatchScore: number | null;
+  job?: { title: string } | null;
 }): CandidateSummary {
   const skills = (candidate.skills ?? {}) as { primary?: string[]; secondary?: string[] };
   return {
@@ -35,6 +38,9 @@ function toSummary(candidate: {
     overallRating: candidate.overallRating,
     uploadedAt: candidate.uploadedAt,
     availability: candidate.availability,
+    jobId: candidate.jobId,
+    jobTitle: candidate.job?.title ?? null,
+    jobMatchScore: candidate.jobMatchScore,
   };
 }
 
@@ -58,16 +64,48 @@ type UploadResult =
   | { fileName: string; status: "success"; candidateId: string }
   | { fileName: string; status: "error"; error: string };
 
+const uploadBodySchema = z.object({
+  jobId: z.string().trim().min(1, "jobId is required — select a job before uploading resumes"),
+});
+
 export const uploadCandidates = asyncHandler(async (req, res) => {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
   if (files.length === 0) {
     throw ApiError.badRequest('No files uploaded. Use multipart field name "files".');
   }
 
+  const { jobId } = uploadBodySchema.parse(req.body);
+  const job = await prisma.job.findUnique({ where: { id: jobId } });
+  if (!job) {
+    throw ApiError.notFound(`Job ${jobId} not found`);
+  }
+
   const results: UploadResult[] = await Promise.all(
     files.map(async (file): Promise<UploadResult> => {
       try {
         const parsed = await aiService.parseResume(file.buffer, file.originalname, file.mimetype);
+        const uploadedAt = new Date();
+
+        // Job-fit scoring is best-effort, same as indexing below: the
+        // candidate is a real, successfully-parsed resume either way, so an
+        // ai-service hiccup on this deterministic scoring step shouldn't
+        // fail the whole upload -- it only means the score is temporarily
+        // absent until the candidate is re-scored.
+        let jobMatchScore: number | null = null;
+        let jobMatchBreakdown: Prisma.InputJsonValue | undefined = undefined;
+        try {
+          const score = await aiService.scoreCandidateForJob(
+            { ...parsed, uploadedAt: uploadedAt.toISOString() },
+            job.intent as unknown as JobIntent
+          );
+          jobMatchScore = score.matchScore;
+          jobMatchBreakdown = score.breakdown as unknown as Prisma.InputJsonValue;
+        } catch (scoreErr) {
+          console.warn(
+            `[upload] job scoring failed for candidate ${parsed.id} (${file.originalname}):`,
+            (scoreErr as Error).message
+          );
+        }
 
         const ext = path.extname(file.originalname) || path.extname(parsed.name) || "";
         const diskPath = path.join(env.uploadDir, `${parsed.id}${ext}`);
@@ -80,6 +118,7 @@ export const uploadCandidates = asyncHandler(async (req, res) => {
             id: parsed.id,
             fileName: file.originalname,
             resumeFileUrl,
+            uploadedAt,
             name: parsed.name,
             email: parsed.email,
             phone: parsed.phone,
@@ -105,6 +144,9 @@ export const uploadCandidates = asyncHandler(async (req, res) => {
             suitableRoles: parsed.suitableRoles as unknown as Prisma.InputJsonValue,
             technologyStack: parsed.technologyStack as unknown as Prisma.InputJsonValue,
             resumeText: parsed.resumeText,
+            jobId: job.id,
+            jobMatchScore,
+            jobMatchBreakdown,
           },
         });
 
@@ -215,6 +257,7 @@ export const listCandidates = asyncHandler(async (req, res) => {
       orderBy: { uploadedAt: "desc" },
       skip: (page - 1) * pageSize,
       take: pageSize,
+      include: { job: { select: { title: true } } },
     }),
     prisma.candidate.count({ where }),
   ]);
@@ -234,6 +277,54 @@ export const getCandidateById = asyncHandler(async (req, res) => {
     throw ApiError.notFound(`Candidate ${id} not found`);
   }
   res.json(candidate);
+});
+
+const reassignJobSchema = z.object({
+  jobId: z.string().trim().min(1, "jobId is required"),
+});
+
+/** Re-scores an existing candidate against a (possibly different) job and
+ * persists the result -- the same deterministic scoring step upload runs,
+ * exposed standalone so a candidate can be moved/rescored after the fact
+ * (e.g. bulk-reclassifying candidates that were imported without a specific
+ * job). Unlike upload's best-effort scoring, a failure here is surfaced
+ * directly to the caller rather than silently falling back to a null score,
+ * since this is an explicit, single-candidate action. */
+export const reassignCandidateJob = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { jobId } = reassignJobSchema.parse(req.body);
+
+  const [candidate, job] = await Promise.all([
+    prisma.candidate.findUnique({ where: { id } }),
+    prisma.job.findUnique({ where: { id: jobId } }),
+  ]);
+  if (!candidate) {
+    throw ApiError.notFound(`Candidate ${id} not found`);
+  }
+  if (!job) {
+    throw ApiError.notFound(`Job ${jobId} not found`);
+  }
+
+  const { matchScore, breakdown } = await aiService.scoreCandidateForJob(
+    { ...candidate, uploadedAt: candidate.uploadedAt.toISOString() },
+    job.intent as unknown as JobIntent
+  );
+
+  const updated = await prisma.candidate.update({
+    where: { id },
+    data: {
+      jobId: job.id,
+      jobMatchScore: matchScore,
+      jobMatchBreakdown: breakdown as unknown as Prisma.InputJsonValue,
+    },
+  });
+
+  res.json({
+    id: updated.id,
+    jobId: updated.jobId,
+    jobMatchScore: updated.jobMatchScore,
+    jobMatchBreakdown: updated.jobMatchBreakdown,
+  });
 });
 
 export const downloadResume = asyncHandler(async (req, res) => {

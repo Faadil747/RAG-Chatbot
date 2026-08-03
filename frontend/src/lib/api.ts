@@ -4,6 +4,8 @@ import type {
   CandidateListResponse,
   ChatHistoryResponse,
   ChatResponse,
+  Job,
+  JobListResponse,
   Justification,
   SearchResponse,
   UploadResponse,
@@ -65,11 +67,12 @@ function buildQueryString(params: Record<string, string | number | undefined>): 
 // Candidates
 // ---------------------------------------------------------------------------
 
-export function uploadCandidates(files: File[]): Promise<UploadResponse> {
+export function uploadCandidates(files: File[], jobId: string): Promise<UploadResponse> {
   const formData = new FormData();
   for (const file of files) {
     formData.append('files', file);
   }
+  formData.append('jobId', jobId);
   return request<UploadResponse>('/candidates/upload', {
     method: 'POST',
     body: formData,
@@ -101,6 +104,25 @@ export function getResumeDownloadUrl(id: string): string {
 
 export function deleteCandidate(id: string): Promise<{ success: true }> {
   return request<{ success: true }>(`/candidates/${id}`, { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
+// Jobs
+// ---------------------------------------------------------------------------
+
+export function listJobs(): Promise<JobListResponse> {
+  return request<JobListResponse>('/jobs');
+}
+
+export function createJob(title: string, description: string): Promise<Job> {
+  return request<Job>('/jobs', {
+    method: 'POST',
+    body: JSON.stringify({ title, description }),
+  });
+}
+
+export function getJob(id: string): Promise<Job> {
+  return request<Job>(`/jobs/${id}`);
 }
 
 // ---------------------------------------------------------------------------

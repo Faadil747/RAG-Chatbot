@@ -1,11 +1,18 @@
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { FileText, Sparkles } from 'lucide-react';
+import { FileText, Plus, Sparkles } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { DropzoneUploader } from '@/components/upload/DropzoneUploader';
 import { UploadPipelineCard } from '@/components/upload/UploadPipelineCard';
 import { useUpload } from '@/hooks/useUpload';
+import { useJobs } from '@/hooks/useJobs';
 
 export default function CandidateCreation() {
-  const { pending, items, isSubmitting, addFiles, removePending, submit, retryItem, removeItem } = useUpload();
+  const navigate = useNavigate();
+  const { jobs, isLoading: jobsLoading } = useJobs();
+  const [jobId, setJobId] = useState<string | null>(null);
+  const { pending, items, isSubmitting, addFiles, removePending, submit, retryItem, removeItem } = useUpload(jobId);
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 md:px-8">
@@ -16,12 +23,26 @@ export default function CandidateCreation() {
         </p>
       </div>
 
+      {!jobsLoading && jobs.length === 0 && (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-dashed border-border bg-secondary/40 px-4 py-3">
+          <p className="text-sm text-muted-foreground">
+            You need a job listing before you can upload resumes — candidates are scored against it.
+          </p>
+          <Button size="sm" variant="outline" onClick={() => navigate('/jobs')}>
+            <Plus className="h-3.5 w-3.5" /> Create Job
+          </Button>
+        </div>
+      )}
+
       <DropzoneUploader
         files={pending}
         onAddFiles={addFiles}
         onRemoveFile={removePending}
         onSubmit={submit}
         isSubmitting={isSubmitting}
+        jobs={jobs}
+        jobId={jobId}
+        onJobIdChange={setJobId}
       />
 
       <div className="mt-8">

@@ -68,6 +68,9 @@ export interface Candidate extends ParsedCandidate {
   fileName: string;
   resumeFileUrl: string;
   uploadedAt: Date | string;
+  jobId: string | null;
+  jobMatchScore: number | null;
+  jobMatchBreakdown: JobMatchBreakdown | null;
 }
 
 /** Projected subset used in list views and search results. */
@@ -82,6 +85,46 @@ export interface CandidateSummary {
   overallRating: number;
   uploadedAt: Date | string;
   availability: string;
+  jobId: string | null;
+  jobTitle: string | null;
+  jobMatchScore: number | null;
+}
+
+/**
+ * Structured intent parsed from a free-text job description by ai-service
+ * `POST /ai/jobs/parse`. Mirrors ai-service's `SearchIntent` model -- same
+ * shape the deterministic Ranking Agent scores a candidate against,
+ * whether that intent came from a one-off search query or (here) a saved
+ * Job's description.
+ */
+export interface JobIntent {
+  designation: string | null;
+  requiredSkills: string[];
+  minExperience: number | null;
+  maxExperience: number | null;
+  location: string | null;
+  industry: string | null;
+  education: string | null;
+  availability: string | null;
+  keywords: string[];
+}
+
+export interface JobMatchBreakdown {
+  skillMatch: number;
+  experienceMatch: number;
+  designationMatch: number;
+  industryMatch: number;
+  educationMatch: number;
+  technologyMatch: number;
+  freshnessScore: number;
+}
+
+export interface Job {
+  id: string;
+  title: string;
+  description: string;
+  intent: JobIntent;
+  createdAt: Date | string;
 }
 
 export interface Justification {

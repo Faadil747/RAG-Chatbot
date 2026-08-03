@@ -12,7 +12,7 @@ import type { UploadResultItem } from '@/types';
  * pipeline and only "finalize" a card once both the animation has reached the
  * last stage AND we have a real result for that file).
  */
-export function useUpload() {
+export function useUpload(jobId: string | null) {
   const [pending, setPending] = useState<File[]>([]);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -75,7 +75,7 @@ export function useUpload() {
   }
 
   const submit = useCallback(async () => {
-    if (pending.length === 0 || isSubmitting) return;
+    if (pending.length === 0 || isSubmitting || !jobId) return;
     const filesToUpload = pending;
     setIsSubmitting(true);
     setPending([]);
@@ -91,7 +91,7 @@ export function useUpload() {
     newItems.forEach((item, idx) => runAnimation(item.id, item.file.name, idx * 220));
 
     try {
-      const res = await uploadCandidates(filesToUpload);
+      const res = await uploadCandidates(filesToUpload, jobId);
       for (const result of res.results) {
         finalResults.current.set(result.fileName, result);
       }
@@ -123,18 +123,18 @@ export function useUpload() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [pending, isSubmitting]);
+  }, [pending, isSubmitting, jobId]);
 
   const retryItem = useCallback(async (itemId: string) => {
     const item = items.find((it) => it.id === itemId);
-    if (!item) return;
+    if (!item || !jobId) return;
 
     finalResults.current.delete(item.file.name);
     setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, stage: 'queued', error: undefined } : it)));
     runAnimation(itemId, item.file.name, 0);
 
     try {
-      const res = await uploadCandidates([item.file]);
+      const res = await uploadCandidates([item.file], jobId);
       const result = res.results[0];
       if (result) finalResults.current.set(result.fileName, result);
       setItems((prev) =>
@@ -158,7 +158,7 @@ export function useUpload() {
       setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, stage: 'error', error: message } : it)));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [items, jobId]);
 
   const removeItem = useCallback((itemId: string) => {
     const timer = timers.current.get(itemId);

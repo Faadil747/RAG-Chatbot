@@ -20,6 +20,7 @@ from core.embeddings import load_model
 from models.search import HealthResponse
 from routers import chat as chat_router
 from routers import index_ as index_router
+from routers import jobs as jobs_router
 from routers import parse as parse_router
 from routers import search as search_router
 from services.candidate_store import candidate_store
@@ -75,6 +76,7 @@ app.include_router(parse_router.router, prefix="/ai", tags=["parse"])
 app.include_router(index_router.router, prefix="/ai", tags=["index"])
 app.include_router(search_router.router, prefix="/ai", tags=["search"])
 app.include_router(chat_router.router, prefix="/ai", tags=["chat"])
+app.include_router(jobs_router.router, prefix="/ai", tags=["jobs"])
 
 
 @app.get("/ai/health", response_model=HealthResponse, response_model_by_alias=True)

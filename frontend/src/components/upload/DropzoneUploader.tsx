@@ -3,7 +3,15 @@ import { useDropzone, type FileRejection } from 'react-dropzone';
 import { motion } from 'framer-motion';
 import { File as FileIcon, UploadCloud, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import type { Job } from '@/types';
 
 const ACCEPTED_TYPES = {
   'application/pdf': ['.pdf'],
@@ -17,6 +25,9 @@ interface DropzoneUploaderProps {
   onRemoveFile: (file: File) => void;
   onSubmit: () => void;
   isSubmitting: boolean;
+  jobs: Job[];
+  jobId: string | null;
+  onJobIdChange: (jobId: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -25,7 +36,16 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function DropzoneUploader({ files, onAddFiles, onRemoveFile, onSubmit, isSubmitting }: DropzoneUploaderProps) {
+export function DropzoneUploader({
+  files,
+  onAddFiles,
+  onRemoveFile,
+  onSubmit,
+  isSubmitting,
+  jobs,
+  jobId,
+  onJobIdChange,
+}: DropzoneUploaderProps) {
   const onDrop = useCallback(
     (accepted: File[], rejections: FileRejection[]) => {
       if (accepted.length > 0) onAddFiles(accepted);
@@ -44,6 +64,24 @@ export function DropzoneUploader({ files, onAddFiles, onRemoveFile, onSubmit, is
 
   return (
     <div className="space-y-4">
+      <div>
+        <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+          Job (required — candidates are scored against this job's description)
+        </label>
+        <Select value={jobId ?? undefined} onValueChange={onJobIdChange}>
+          <SelectTrigger>
+            <SelectValue placeholder={jobs.length === 0 ? 'Create a job first' : 'Select a job...'} />
+          </SelectTrigger>
+          <SelectContent>
+            {jobs.map((job) => (
+              <SelectItem key={job.id} value={job.id}>
+                {job.title}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <div
         {...getRootProps()}
         className={cn(
@@ -93,11 +131,12 @@ export function DropzoneUploader({ files, onAddFiles, onRemoveFile, onSubmit, is
               </motion.div>
             ))}
           </div>
-          <div className="flex justify-end pt-2">
-            <Button onClick={onSubmit} disabled={isSubmitting}>
+          <div className="flex flex-col items-end gap-1.5 pt-2">
+            <Button onClick={onSubmit} disabled={isSubmitting || !jobId}>
               <UploadCloud className="h-4 w-4" />
               Upload {files.length} Resume{files.length > 1 ? 's' : ''}
             </Button>
+            {!jobId && <p className="text-xs text-muted-foreground">Select a job above to enable upload.</p>}
           </div>
         </div>
       )}
