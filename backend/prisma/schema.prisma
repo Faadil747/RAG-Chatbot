@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Candidate {
+  id            String   @id @default(uuid())
+  fileName      String
+  resumeFileUrl String
+  uploadedAt    DateTime @default(now())
+
+  name        String
+  email       String
+  phone       String
+  currentRole String
+  location    String
+  linkedin    String?
+  github      String?
+  portfolio   String?
+
+  totalExperienceYears Float
+  availability         String @default("Not Specified")
+  overallRating        Float
+
+  skills            Json // { primary: string[]; secondary: string[] }
+  experience        Json // Experience[]
+  education         Json // Education[]
+  projects          Json // Project[]
+  certifications    Json // string[]
+  languages         Json // string[]
+  previousCompanies Json // string[]
+
+  aiSummary        String @db.Text
+  careerHighlights Json // string[]
+  strengths        Json // string[]
+  weaknesses       Json // string[]
+  suitableRoles    Json // string[]
+  technologyStack  Json // string[]
+
+  resumeText String @db.Text
+
+  @@index([uploadedAt])
+  @@index([location])
+  @@index([currentRole])
+  @@index([availability])
+  @@index([totalExperienceYears])
+}
+
+model ChatSession {
+  id        String        @id
+  createdAt DateTime      @default(now())
+  messages  ChatMessage[]
+}
+
+model ChatMessage {
+  id           String      @id @default(uuid())
+  sessionId    String
+  session      ChatSession @relation(fields: [sessionId], references: [id])
+  role         String // "user" | "assistant"
+  content      String      @db.Text
+  suggestions  Json?
+  candidateIds Json?
+  createdAt    DateTime    @default(now())
+
+  @@index([sessionId])
+}

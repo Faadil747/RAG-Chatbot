@@ -1,0 +1,147 @@
+// Shared domain types for the AI-Powered Candidate Search Platform frontend.
+// These mirror the backend API contract exactly (camelCase everywhere).
+
+export interface CandidateSummary {
+  id: string;
+  name: string;
+  currentRole: string;
+  totalExperienceYears: number;
+  location: string;
+  topSkills: string[];
+  aiSummary: string;
+  overallRating: number;
+  uploadedAt: string;
+  availability: string;
+}
+
+export interface Experience {
+  company: string;
+  role: string;
+  startDate: string;
+  endDate: string;
+  durationMonths: number;
+  description: string;
+}
+
+export interface Education {
+  institution: string;
+  degree: string;
+  field: string;
+  year: string;
+}
+
+export interface Project {
+  name: string;
+  description: string;
+  techStack: string[];
+}
+
+export interface Candidate extends CandidateSummary {
+  fileName: string;
+  resumeFileUrl: string;
+  email: string;
+  phone: string;
+  linkedin?: string | null;
+  github?: string | null;
+  portfolio?: string | null;
+  skills: {
+    primary: string[];
+    secondary: string[];
+  };
+  experience: Experience[];
+  education: Education[];
+  projects: Project[];
+  certifications: string[];
+  languages: string[];
+  previousCompanies: string[];
+  careerHighlights: string[];
+  strengths: string[];
+  weaknesses: string[];
+  suitableRoles: string[];
+  technologyStack: string[];
+  resumeText: string;
+}
+
+export interface ScoreBreakdown {
+  skillMatch: number;
+  experienceMatch: number;
+  designationMatch: number;
+  industryMatch: number;
+  educationMatch: number;
+  technologyMatch: number;
+  freshnessScore: number;
+}
+
+export interface Justification {
+  matchingSkills: string[];
+  relevantExperience: string;
+  strongPoints: string[];
+  potentialConcerns: string[];
+  recommendation: string;
+}
+
+export interface SearchResult {
+  candidateId: string;
+  rank: number;
+  matchScore: number;
+  breakdown: ScoreBreakdown;
+  candidate: CandidateSummary;
+  justification: Justification | null;
+}
+
+export interface SearchResponse {
+  query: string;
+  totalMatches: number;
+  results: SearchResult[];
+}
+
+export interface ChatResponse {
+  sessionId: string;
+  reply: string;
+  suggestions: string[];
+  candidateIds: string[];
+  candidates: CandidateSummary[];
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+  suggestions?: string[];
+  candidates?: CandidateSummary[];
+}
+
+export interface ChatHistoryResponse {
+  sessionId: string;
+  messages: ChatMessage[];
+}
+
+export interface CandidateListResponse {
+  candidates: CandidateSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface UploadResultItem {
+  fileName: string;
+  status: 'success' | 'error';
+  candidateId?: string;
+  error?: string;
+}
+
+export interface UploadResponse {
+  results: UploadResultItem[];
+}
+
+export interface CandidateListFilters {
+  search?: string;
+  skills?: string[];
+  experienceMin?: number;
+  experienceMax?: number;
+  location?: string;
+  designation?: string;
+  availability?: string;
+  page?: number;
+  pageSize?: number;
+}

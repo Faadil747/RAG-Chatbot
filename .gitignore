@@ -1,0 +1,29 @@
+# Node
+node_modules/
+dist/
+build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env files
+.env
+!.env.example
+
+# ai-service local vector store / index (regenerated at runtime)
+ai-service/data/faiss.index
+ai-service/data/vector_ids.json
+ai-service/data/candidates_store.json
+
+# backend uploaded resumes (local dev storage)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

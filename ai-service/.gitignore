@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+data/faiss.index
+data/vector_ids.json
+data/candidates_store.json
