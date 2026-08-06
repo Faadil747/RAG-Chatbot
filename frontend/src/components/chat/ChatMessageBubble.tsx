@@ -4,6 +4,7 @@ import { format } from 'date-fns';
 import { Avatar } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
 import { CandidateChip } from '@/components/chat/CandidateChip';
+import { ChatSearchResults } from '@/components/chat/ChatSearchResults';
 import type { ChatMessage } from '@/types';
 
 interface ChatMessageBubbleProps {
@@ -13,6 +14,7 @@ interface ChatMessageBubbleProps {
 
 export function ChatMessageBubble({ message, onSuggestionClick }: ChatMessageBubbleProps) {
   const isUser = message.role === 'user';
+  const hasResults = !isUser && !!message.results && message.results.length > 0;
 
   return (
     <motion.div
@@ -29,7 +31,17 @@ export function ChatMessageBubble({ message, onSuggestionClick }: ChatMessageBub
         </div>
       )}
 
-      <div className={cn('flex max-w-[85%] flex-col gap-2', isUser ? 'items-end' : 'items-start')}>
+      <div
+        className={cn(
+          'flex flex-col gap-2',
+          // Ranked result cards carry a lot more content (skills, score
+          // breakdown, justification) than a text reply -- let them use
+          // most of the panel width instead of the 85% cap that keeps
+          // ordinary chat bubbles from stretching too wide.
+          hasResults ? 'w-full max-w-full' : 'max-w-[85%]',
+          isUser ? 'items-end' : 'items-start'
+        )}
+      >
         <div
           className={cn(
             'whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-soft',
@@ -42,7 +54,9 @@ export function ChatMessageBubble({ message, onSuggestionClick }: ChatMessageBub
         </div>
         <span className="px-1 text-[10px] text-muted-foreground">{format(new Date(message.createdAt), 'p')}</span>
 
-        {message.candidates && message.candidates.length > 0 && (
+        {hasResults && <ChatSearchResults results={message.results!} query={message.query ?? ''} />}
+
+        {!hasResults && message.candidates && message.candidates.length > 0 && (
           <div className="flex w-full flex-col gap-1.5">
             {message.candidates.map((c) => (
               <CandidateChip key={c.id} candidate={c} />

@@ -58,9 +58,12 @@ async def run_search(query: str, top_k: int = 10, with_justifications: bool = Tr
         async def _justify(candidate: dict) -> dict:
             return await asyncio.to_thread(analyze_candidate, candidate, query, "general")
 
-        justification_tasks = [
-            _justify(entry["candidate"]) for entry in ranked[:TOP_JUSTIFICATION_COUNT]
-        ]
+        justification_tasks = []
+        for entry in ranked[:TOP_JUSTIFICATION_COUNT]:
+            candidate_for_analysis = dict(entry["candidate"])
+            candidate_for_analysis["matchScore"] = entry["matchScore"]
+            candidate_for_analysis["subScores"] = entry["subScores"]
+            justification_tasks.append(_justify(candidate_for_analysis))
         justifications = await asyncio.gather(*justification_tasks) if justification_tasks else []
     else:
         justifications = []

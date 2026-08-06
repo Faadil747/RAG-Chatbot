@@ -39,8 +39,8 @@ router = APIRouter()
 
 OUT_OF_DOMAIN_REPLY = "I can only answer questions related to the uploaded candidate database."
 
-CHAT_SEARCH_TOP_K = 8
-MAX_CHAT_CONTEXT_CANDIDATES = 8
+CHAT_SEARCH_TOP_K = 10
+MAX_CHAT_CONTEXT_CANDIDATES = 10
 MAX_RECOMMENDATION_CANDIDATES = 3
 
 _INTERVIEW_QUESTIONS_RE = re.compile(r"interview\s+questions?|questions?\s+to\s+ask", re.I)
@@ -102,6 +102,12 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     retrieved_candidates: list[dict] = []
     resolved_ids: list[str] = []
     extra_instruction: str | None = None
+    # Only set for a genuine fresh search this turn -- lets the frontend
+    # render the same ranked, justified result cards the Search page uses
+    # (as opposed to a follow-up about already-discussed candidates, which
+    # has no fresh ranking to show).
+    chat_search_results: list[dict] = []
+    chat_search_query: str | None = None
 
     # A message either explicitly reads as a new search ("find python
     # developers"), or implicitly is one: it doesn't resolve against
@@ -145,10 +151,17 @@ async def chat(payload: ChatRequest) -> ChatResponse:
 
     if treat_as_new_search:
         try:
-            search_result = await run_search(message, CHAT_SEARCH_TOP_K, with_justifications=False)
+            # with_justifications=True mirrors POST /ai/search exactly (ranks
+            # 1-3 get a real Recommendation Agent justification), so the chat
+            # UI can render the identical top-3-with-justification card the
+            # Search page uses instead of a cheaper, less-grounded summary.
+            search_result = await run_search(message, CHAT_SEARCH_TOP_K, with_justifications=True)
         except Exception:
             logger.exception("Search pipeline failed inside chat for message=%r", message)
             raise HTTPException(status_code=502, detail="Candidate search failed.")
+
+        chat_search_results = search_result["results"]
+        chat_search_query = message
 
         summaries = [r["candidate"] for r in search_result["results"]]
         update_search_results(state, message, summaries)
@@ -158,11 +171,14 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             if full:
                 augmented = dict(full)
                 augmented["matchScore"] = r["matchScore"]
+                augmented["subScores"] = r.get("breakdown")
                 retrieved_candidates.append(augmented)
         resolved_ids = [c["id"] for c in retrieved_candidates]
         extra_instruction = (
             "This is a fresh set of search results for the recruiter's query above. "
-            "Briefly summarize the strongest matches (name, role, why they fit) and "
+            "Briefly summarize the strongest matches in rank order using their Match Score, "
+            "most important score dimensions, role, and concrete evidence from the candidate fields. "
+            "Mention meaningful gaps when visible, and "
             "proactively suggest next steps such as comparing top candidates or "
             "viewing full profiles."
         )
@@ -236,4 +252,6 @@ async def chat(payload: ChatRequest) -> ChatResponse:
         suggestions=suggestions,
         candidate_ids=final_candidate_ids,
         candidates=candidates_out,
+        query=chat_search_query,
+        results=chat_search_results,
     )

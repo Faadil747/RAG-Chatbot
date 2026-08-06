@@ -80,6 +80,17 @@ def _provider_chain() -> list[str]:
     return chain
 
 
+class _EmptyCompletionError(RuntimeError):
+    """Raised when a provider returns HTTP 200 with empty content -- e.g. a
+    reasoning model that spent its entire max_tokens budget on hidden
+    reasoning before ever writing the actual answer."""
+
+    def __init__(self, provider: str, finish_reason: str | None):
+        self.provider = provider
+        self.finish_reason = finish_reason
+        super().__init__(f"Empty completion content from '{provider}' (finish_reason={finish_reason!r})")
+
+
 def _completion_content(
     provider: str,
     system: str,
@@ -116,8 +127,16 @@ def _completion_content(
         # _call_with_fallback treat that as a real (if unparseable) answer
         # and never try the next provider in the chain -- raise instead so
         # the existing fallback logic actually kicks in.
-        raise RuntimeError(f"Empty completion content from '{provider}' (finish_reason={choice.finish_reason!r})")
+        raise _EmptyCompletionError(provider, choice.finish_reason)
     return content
+
+
+# When a provider exhausts its budget purely on reasoning (finish_reason
+# "length" with zero visible content), the fix is a bigger budget for that
+# SAME provider, not a different provider -- so _call_with_fallback retries
+# once at a higher ceiling before moving on. Capped well below the point
+# (observed ~16k) where reasoning latency becomes multi-minute.
+_REASONING_RETRY_MAX_TOKENS = 14000
 
 
 def _call_with_fallback(
@@ -136,14 +155,35 @@ def _call_with_fallback(
     last_exc: Exception | None = None
 
     for i, provider in enumerate(chain):
+        is_last = i + 1 == len(chain)
         try:
             return _completion_content(
                 provider, system, user,
                 temperature=temperature, max_tokens=max_tokens, model=model, json_mode=json_mode,
             )
+        except _EmptyCompletionError as exc:
+            last_exc = exc
+            if exc.finish_reason == "length" and max_tokens < _REASONING_RETRY_MAX_TOKENS:
+                bumped = min(_REASONING_RETRY_MAX_TOKENS, int(max_tokens * 1.75))
+                logger.warning(
+                    "LLM provider '%s' exhausted its %d-token budget on reasoning with no visible "
+                    "output; retrying the same provider at %d tokens before falling back",
+                    provider, max_tokens, bumped,
+                )
+                try:
+                    return _completion_content(
+                        provider, system, user,
+                        temperature=temperature, max_tokens=bumped, model=model, json_mode=json_mode,
+                    )
+                except Exception as retry_exc:  # noqa: BLE001
+                    last_exc = retry_exc
+            logger.warning(
+                "LLM provider '%s' failed (%s: %s)%s",
+                provider, type(last_exc).__name__, last_exc,
+                "; no more providers in the chain" if is_last else "; falling back to next provider",
+            )
         except Exception as exc:  # noqa: BLE001 -- deliberately broad: any provider failure should fall through
             last_exc = exc
-            is_last = i + 1 == len(chain)
             logger.warning(
                 "LLM provider '%s' failed (%s: %s)%s",
                 provider, type(exc).__name__, exc,

@@ -120,6 +120,8 @@ export interface SearchResult {
   justification: Justification | null;
 }
 
+export type ScoreBreakdownKey = keyof ScoreBreakdown;
+
 export interface SearchResponse {
   query: string;
   totalMatches: number;
@@ -132,6 +134,8 @@ export interface ChatResponse {
   suggestions: string[];
   candidateIds: string[];
   candidates: CandidateSummary[];
+  query?: string | null;
+  results?: SearchResult[];
 }
 
 export interface ChatMessage {
@@ -140,6 +144,8 @@ export interface ChatMessage {
   createdAt: string;
   suggestions?: string[];
   candidates?: CandidateSummary[];
+  query?: string;
+  results?: SearchResult[];
 }
 
 export interface ChatHistoryResponse {

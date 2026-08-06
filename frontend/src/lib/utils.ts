@@ -46,3 +46,46 @@ export function scoreBandClasses(band: ScoreBand): string {
 export function uid(prefix = 'id'): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
 }
+
+/**
+ * Freshness band for a candidate's uploadedAt date -- mirrors the 30/60/90
+ * day bands the Resume Freshness scoring dimension uses server-side
+ * (ai-service/agents/ranking_agent.py `_freshness_score`), so the label
+ * shown on a candidate card always agrees with what actually drove that
+ * dimension of the Match Score.
+ */
+export type FreshnessBand = 'fresh' | 'recent' | 'aging' | 'older';
+
+export function getFreshnessBand(uploadedAt: string): FreshnessBand {
+  const ageDays = (Date.now() - new Date(uploadedAt).getTime()) / (1000 * 60 * 60 * 24);
+  if (ageDays <= 30) return 'fresh';
+  if (ageDays <= 60) return 'recent';
+  if (ageDays <= 90) return 'aging';
+  return 'older';
+}
+
+export function freshnessBandLabel(band: FreshnessBand): string {
+  switch (band) {
+    case 'fresh':
+      return 'Fresh';
+    case 'recent':
+      return 'Recent';
+    case 'aging':
+      return 'Aging';
+    case 'older':
+      return 'Older';
+  }
+}
+
+export function freshnessBandClasses(band: FreshnessBand): string {
+  switch (band) {
+    case 'fresh':
+      return 'bg-success/15 text-success border-success/30';
+    case 'recent':
+      return 'bg-primary/10 text-primary border-primary/30';
+    case 'aging':
+      return 'bg-warning/15 text-warning border-warning/30';
+    case 'older':
+      return 'bg-muted text-muted-foreground border-border';
+  }
+}

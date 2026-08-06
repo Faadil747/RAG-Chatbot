@@ -72,6 +72,8 @@ export function useChat() {
           createdAt: new Date().toISOString(),
           suggestions: res.suggestions,
           candidates: res.candidates,
+          query: res.query ?? undefined,
+          results: res.results,
         };
         addMessage(assistantMessage);
       } catch (err) {

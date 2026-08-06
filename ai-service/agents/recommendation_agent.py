@@ -22,6 +22,12 @@ query or request. You must base every statement strictly on the candidate JSON p
 have. If the candidate is a weak fit for something in the query, say so honestly in \
 "concerns" rather than glossing over it.
 
+When matchScore/subScores are present, use them as the primary scoring evidence. The \
+official scoring rubric is: Skill Match 20%, Technology Match 14%, Designation Match 14%, \
+Experience Match 15%, Industry Match 9%, Education Match 8%, Location Match 8%, \
+Availability Match 7%, Resume Freshness 5%. Tie recommendations to these dimensions \
+plus concrete resume/profile evidence.
+
 Respond with a single valid JSON object and nothing else."""
 
 USER_TEMPLATE = """Recruiter's query / request: "{query}"
@@ -67,6 +73,7 @@ def _trim_candidate_for_prompt(candidate: dict) -> dict:
         "projects", "certifications", "languages", "previousCompanies",
         "aiSummary", "careerHighlights", "strengths", "weaknesses",
         "suitableRoles", "technologyStack",
+        "matchScore", "subScores",
     ]
     return {k: candidate.get(k) for k in keys if k in candidate}
 

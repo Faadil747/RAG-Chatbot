@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { AlertCircle, Search, Sparkles } from 'lucide-react';
 import { Input } from '@/components/ui/input';
@@ -7,7 +6,7 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SearchResultCard } from '@/components/search/SearchResultCard';
 import { searchCandidates, getSearchAnalysis, ApiError } from '@/lib/api';
-import type { Justification, SearchResponse } from '@/types';
+import { useCandidateSearchStore } from '@/store/candidateSearchStore';
 
 const EXAMPLE_QUERIES = [
   'Python Developers with 5 years experience',
@@ -18,23 +17,32 @@ const EXAMPLE_QUERIES = [
 ];
 
 export default function CandidateSearch() {
-  const [query, setQuery] = useState('');
-  const [hasSearched, setHasSearched] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [response, setResponse] = useState<SearchResponse | null>(null);
-
-  const [analysisCache, setAnalysisCache] = useState<Record<string, Justification>>({});
-  const [analysisLoadingId, setAnalysisLoadingId] = useState<string | null>(null);
+  const {
+    query,
+    hasSearched,
+    isSearching,
+    error,
+    response,
+    analysisCache,
+    analysisLoadingId,
+    setQuery,
+    setSearching,
+    setError,
+    setResponse,
+    markSearched,
+    resetAnalysis,
+    setAnalysisLoadingId,
+    cacheAnalysis,
+  } = useCandidateSearchStore();
 
   async function runSearch(q: string) {
     const trimmed = q.trim();
     if (!trimmed || isSearching) return;
     setQuery(trimmed);
-    setIsSearching(true);
+    setSearching(true);
     setError(null);
-    setHasSearched(true);
-    setAnalysisCache({});
+    markSearched();
+    resetAnalysis();
 
     try {
       const res = await searchCandidates(trimmed);
@@ -43,7 +51,7 @@ export default function CandidateSearch() {
       setError(err instanceof ApiError ? err.message : 'Search failed. Please try again.');
       setResponse(null);
     } finally {
-      setIsSearching(false);
+      setSearching(false);
     }
   }
 
@@ -52,7 +60,7 @@ export default function CandidateSearch() {
     setAnalysisLoadingId(candidateId);
     try {
       const justification = await getSearchAnalysis(query, candidateId);
-      setAnalysisCache((prev) => ({ ...prev, [candidateId]: justification }));
+      cacheAnalysis(candidateId, justification);
     } catch {
       // Silently ignore — the button remains visible so the recruiter can retry.
     } finally {

@@ -96,14 +96,23 @@ matches without requiring an exact string match.
   job's stated min–max range.
 - Outside the range, the score decays by **15 points per year** of distance
   from the nearest bound (e.g. 2 years under the minimum → 70), floored at 0.
+- If the recruiter only gives a minimum (e.g. "5+ years"), the system treats
+  it as a soft band rather than an infinite perfect range: min to min+5 years
+  for experienced roles, or min to min+2 years for junior roles. Candidates
+  above that soft band are still valid but lose **8 points per extra year** so
+  heavily over-qualified profiles do not all display 100% Experience Match.
 
-This treats being under-qualified and over-qualified symmetrically — the
-penalty is about distance from the stated range, not direction.
+This makes under-qualified candidates visibly lower while still applying a
+lighter over-qualification penalty when a candidate is far above the requested
+range or soft band.
 
 ### 5. Industry Match (9%)
 
-Keyword overlap between the job's industry/domain terms (e.g. "fintech",
-"healthcare") and the candidate's previous employers and role descriptions.
+Keyword overlap between the job's explicit industry/domain terms (e.g.
+"fintech", "healthcare") and the candidate's previous employers and role
+descriptions. If no explicit industry/domain is present, this dimension stays
+neutral rather than reusing generic skills/role keywords as false industry
+evidence.
 
 ### 6. Education Match (8%)
 

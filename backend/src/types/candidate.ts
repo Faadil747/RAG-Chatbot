@@ -158,4 +158,6 @@ export interface ChatResponse {
   suggestions: string[];
   candidateIds: string[];
   candidates: CandidateSummary[];
+  query?: string | null;
+  results?: SearchResult[];
 }

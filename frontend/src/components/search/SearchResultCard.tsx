@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
-import { Loader2, MapPin, MessageSquareText, Sparkles, Wand2 } from 'lucide-react';
+import { formatDistanceToNow } from 'date-fns';
+import { Clock, Loader2, MapPin, MessageSquareText, Sparkles, Wand2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,6 +9,7 @@ import { ScoreBadge } from '@/components/candidate/ScoreBadge';
 import { SkillBadges } from '@/components/candidate/SkillBadges';
 import { JustificationPanel } from '@/components/search/JustificationPanel';
 import { useCandidateProfileStore } from '@/store/candidateProfileStore';
+import { cn, freshnessBandClasses, freshnessBandLabel, getFreshnessBand } from '@/lib/utils';
 import type { Justification, SearchResult } from '@/types';
 
 interface SearchResultCardProps {
@@ -28,6 +30,7 @@ export function SearchResultCard({
   const { candidate } = result;
   const isTopThree = result.rank <= 3;
   const justificationToShow = isTopThree ? result.justification : cachedAnalysis;
+  const freshnessBand = candidate.uploadedAt ? getFreshnessBand(candidate.uploadedAt) : null;
 
   return (
     <motion.div
@@ -65,10 +68,28 @@ export function SearchResultCard({
                   <MapPin className="h-3 w-3" /> {candidate.location}
                 </span>
                 <span>{candidate.totalExperienceYears} yrs experience</span>
+                {candidate.uploadedAt && (
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Posted {formatDistanceToNow(new Date(candidate.uploadedAt), { addSuffix: true })}
+                  </span>
+                )}
               </div>
             </div>
           </div>
-          <ScoreBadge score={result.matchScore} size="lg" />
+          <div className="flex flex-col items-end gap-1.5">
+            <ScoreBadge score={result.matchScore} size="lg" />
+            {freshnessBand && (
+              <span
+                className={cn(
+                  'inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium',
+                  freshnessBandClasses(freshnessBand)
+                )}
+              >
+                {freshnessBandLabel(freshnessBand)}
+              </span>
+            )}
+          </div>
         </div>
 
         <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{candidate.aiSummary}</p>

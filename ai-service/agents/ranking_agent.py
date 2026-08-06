@@ -102,6 +102,24 @@ def _canonical(norm_term: str) -> str:
     return SKILL_ALIASES.get(norm_term, norm_term)
 
 
+def _unique_terms(terms: list[str]) -> list[str]:
+    """Keep term order but remove exact/alias duplicates so repeated query
+    terms don't distort a dimension's denominator or make the score look more
+    confident than the evidence supports."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for term in terms:
+        norm = _normalize(term)
+        if not norm:
+            continue
+        canon = _canonical(norm)
+        if canon in seen:
+            continue
+        seen.add(canon)
+        unique.append(term)
+    return unique
+
+
 def _term_match_credit(required_term: str, candidate_norms: set[str], candidate_canons: set[str]) -> float:
     """1.0 for an exact/alias match, 0.85 for a close fuzzy match (typos,
     minor formatting differences), 0.0 otherwise. Deliberately NOT a
@@ -125,6 +143,7 @@ def _term_match_credit(required_term: str, candidate_norms: set[str], candidate_
 
 
 def _skill_overlap_score(required: list[str], candidate_skills: list[str]) -> float:
+    required = _unique_terms(required or [])
     if not required:
         return _NEUTRAL_SCORE
     candidate_norms = {_normalize(s) for s in candidate_skills if s}
@@ -134,7 +153,7 @@ def _skill_overlap_score(required: list[str], candidate_skills: list[str]) -> fl
 
 
 def _technology_match_score(required_skills: list[str], keywords: list[str], technology_stack: list[str]) -> float:
-    terms = list(required_skills or []) + list(keywords or [])
+    terms = _unique_terms(list(required_skills or []) + list(keywords or []))
     if not terms:
         return _NEUTRAL_SCORE
     stack_norms = {_normalize(t) for t in technology_stack if t}
@@ -150,14 +169,26 @@ def _experience_match_score(
         return _NEUTRAL_SCORE
 
     lo = min_experience if min_experience is not None else 0.0
-    hi = max_experience if max_experience is not None else float("inf")
+    # For natural-language searches like "5+ years", the recruiter usually
+    # means "at least senior enough", not "20 years is an equally perfect
+    # match". Use a soft upper comfort band when no max is stated so heavily
+    # over-qualified profiles don't all show 100% Experience Match.
+    if max_experience is not None:
+        hi = max_experience
+    elif min_experience is not None:
+        hi = min_experience + (2.0 if min_experience <= 2 else 5.0)
+    else:
+        hi = float("inf")
 
     if lo <= candidate_years <= hi:
         return 100.0
 
     distance = (lo - candidate_years) if candidate_years < lo else (candidate_years - hi)
     distance = max(0.0, distance)
-    score = 100.0 - distance * 15.0
+    # Being under the minimum is a stronger concern than being somewhat above
+    # the soft upper band, but both should be visible in the sub-score.
+    penalty_per_year = 15.0 if candidate_years < lo else 8.0
+    score = 100.0 - distance * penalty_per_year
     return round(max(0.0, min(100.0, score)), 1)
 
 
@@ -316,7 +347,12 @@ def score_candidate(intent: dict, candidate: dict) -> dict:
 
     industry_haystack = list(candidate.get("previousCompanies") or [])
     industry_haystack += [e.get("description", "") for e in (candidate.get("experience") or [])]
-    industry_query = intent.get("industry") or (intent.get("keywords") or [])
+    # Do not use generic free-text keywords as industry evidence. In practice
+    # those keywords often contain skills/role words (e.g. "SAP", "Java",
+    # "Developer"), which made Industry Match incorrectly show 100% for many
+    # candidates. Only score this dimension when the parser found an actual
+    # industry/domain requirement; otherwise keep it neutral.
+    industry_query = intent.get("industry")
     industry_match = _keyword_overlap_score(industry_query, industry_haystack)
 
     education_haystack = [
