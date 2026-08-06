@@ -29,7 +29,7 @@ from typing import Any
 
 # pyrefly: ignore [missing-import]
 from groq import Groq
-from openai import OpenAI
+from openai import APITimeoutError, OpenAI
 
 from core.config import settings
 
@@ -100,6 +100,7 @@ def _completion_content(
     max_tokens: int,
     model: str | None,
     json_mode: bool,
+    timeout: float | None = None,
 ) -> str:
     client = _get_client(provider)
     use_model = _get_model(provider, model)
@@ -115,6 +116,11 @@ def _completion_content(
     )
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if timeout is not None:
+        # Per-call override of the client's configured timeout -- used only
+        # by the reasoning-retry path below, which deliberately needs more
+        # time than an ordinary call.
+        kwargs["timeout"] = timeout
 
     completion = client.chat.completions.create(**kwargs)
     choice = completion.choices[0]
@@ -131,12 +137,15 @@ def _completion_content(
     return content
 
 
-# When a provider exhausts its budget purely on reasoning (finish_reason
-# "length" with zero visible content), the fix is a bigger budget for that
-# SAME provider, not a different provider -- so _call_with_fallback retries
-# once at a higher ceiling before moving on. Capped well below the point
-# (observed ~16k) where reasoning latency becomes multi-minute.
+# A reasoning model can legitimately need more time AND more tokens than an
+# ordinary call's budget on a long prompt (observed: 60-90s+, occasionally
+# exhausting an 8k-token budget purely on hidden reasoning). Rather than
+# treat that as "this provider is broken" and jump straight to the next
+# provider in the chain, retry the SAME provider once with more of both --
+# capped well below the point (observed ~16k tokens / several minutes)
+# where it stops being worth waiting for.
 _REASONING_RETRY_MAX_TOKENS = 14000
+_REASONING_RETRY_TIMEOUT = 110.0
 
 
 def _call_with_fallback(
@@ -156,6 +165,8 @@ def _call_with_fallback(
 
     for i, provider in enumerate(chain):
         is_last = i + 1 == len(chain)
+        retry_max_tokens: int | None = None
+
         try:
             return _completion_content(
                 provider, system, user,
@@ -164,31 +175,42 @@ def _call_with_fallback(
         except _EmptyCompletionError as exc:
             last_exc = exc
             if exc.finish_reason == "length" and max_tokens < _REASONING_RETRY_MAX_TOKENS:
-                bumped = min(_REASONING_RETRY_MAX_TOKENS, int(max_tokens * 1.75))
+                retry_max_tokens = min(_REASONING_RETRY_MAX_TOKENS, int(max_tokens * 1.75))
                 logger.warning(
                     "LLM provider '%s' exhausted its %d-token budget on reasoning with no visible "
-                    "output; retrying the same provider at %d tokens before falling back",
-                    provider, max_tokens, bumped,
+                    "output; retrying at %d tokens / %.0fs timeout before falling back",
+                    provider, max_tokens, retry_max_tokens, _REASONING_RETRY_TIMEOUT,
                 )
-                try:
-                    return _completion_content(
-                        provider, system, user,
-                        temperature=temperature, max_tokens=bumped, model=model, json_mode=json_mode,
-                    )
-                except Exception as retry_exc:  # noqa: BLE001
-                    last_exc = retry_exc
-            logger.warning(
-                "LLM provider '%s' failed (%s: %s)%s",
-                provider, type(last_exc).__name__, last_exc,
-                "; no more providers in the chain" if is_last else "; falling back to next provider",
-            )
+        except APITimeoutError as exc:
+            last_exc = exc
+            # The configured request timeout is tuned for ordinary calls;
+            # a reasoning model can legitimately exceed it on a long
+            # prompt, which isn't the same failure as the provider being
+            # down -- worth one retry with more headroom before giving up.
+            if max_tokens < _REASONING_RETRY_MAX_TOKENS:
+                retry_max_tokens = min(_REASONING_RETRY_MAX_TOKENS, int(max_tokens * 1.25))
+                logger.warning(
+                    "LLM provider '%s' timed out; retrying at %d tokens / %.0fs timeout before falling back",
+                    provider, retry_max_tokens, _REASONING_RETRY_TIMEOUT,
+                )
         except Exception as exc:  # noqa: BLE001 -- deliberately broad: any provider failure should fall through
             last_exc = exc
-            logger.warning(
-                "LLM provider '%s' failed (%s: %s)%s",
-                provider, type(exc).__name__, exc,
-                "; no more providers in the chain" if is_last else "; falling back to next provider",
-            )
+
+        if retry_max_tokens is not None:
+            try:
+                return _completion_content(
+                    provider, system, user,
+                    temperature=temperature, max_tokens=retry_max_tokens, model=model, json_mode=json_mode,
+                    timeout=_REASONING_RETRY_TIMEOUT,
+                )
+            except Exception as retry_exc:  # noqa: BLE001
+                last_exc = retry_exc
+
+        logger.warning(
+            "LLM provider '%s' failed (%s: %s)%s",
+            provider, type(last_exc).__name__, last_exc,
+            "; no more providers in the chain" if is_last else "; falling back to next provider",
+        )
 
     assert last_exc is not None
     raise last_exc

@@ -160,6 +160,14 @@ export const uploadCandidates = asyncHandler(async (req, res) => {
             fileName: created.fileName,
             resumeFileUrl: created.resumeFileUrl,
             uploadedAt: created.uploadedAt,
+            // ai-service keeps its own copy of every candidate for RAG
+            // grounding, entirely separate from Postgres -- job assignment
+            // has to be pushed explicitly or the chatbot's view of "which
+            // job is this candidate in" silently goes stale relative to
+            // what the recruiter sees in the app.
+            jobId: job.id,
+            jobTitle: job.title,
+            jobMatchScore,
           });
         } catch (indexErr) {
           console.warn(
@@ -318,6 +326,23 @@ export const reassignCandidateJob = asyncHandler(async (req, res) => {
       jobMatchBreakdown: breakdown as unknown as Prisma.InputJsonValue,
     },
   });
+
+  // Keep ai-service's own candidate copy in sync -- without this, its
+  // RAG-grounded chat/search answers about "which job is this candidate
+  // in" silently go stale the moment a candidate is reassigned, since
+  // ai-service never round-trips back to Postgres to check. Best-effort:
+  // the reassignment itself already succeeded and is the source of truth.
+  try {
+    await aiService.indexCandidate({
+      ...updated,
+      uploadedAt: updated.uploadedAt.toISOString(),
+      jobId: job.id,
+      jobTitle: job.title,
+      jobMatchScore: updated.jobMatchScore,
+    });
+  } catch (indexErr) {
+    console.warn(`[reassign] ai-service re-indexing failed for candidate ${id}:`, (indexErr as Error).message);
+  }
 
   res.json({
     id: updated.id,

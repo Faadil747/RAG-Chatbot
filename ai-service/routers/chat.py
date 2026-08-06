@@ -1,10 +1,11 @@
 """
 POST /ai/chat -- the RAG-grounded conversational recruitment chatbot.
 
-Pipeline: Validation Agent (in-domain gate) -> retrieval (new search, or
-memory-resolved follow-up references) -> Prompt Builder -> Chatbot Agent
-(or, for interview-question / hiring-recommendation asks, the
-Recommendation Agent directly) -> memory update -> response.
+Pipeline: Validation Agent (in-domain gate) -> either the Analytics Agent
+(aggregate/statistical questions over the whole candidate pool) or normal
+retrieval (new search, or memory-resolved follow-up references) -> Prompt
+Builder -> Chatbot Agent (or, for interview-question / hiring-recommendation
+asks, the Recommendation Agent directly) -> memory update -> response.
 """
 from __future__ import annotations
 
@@ -14,14 +15,17 @@ import re
 
 from fastapi import APIRouter, HTTPException
 
+from agents.analytics_agent import compute_summary_stats, filter_candidates
 from agents.chatbot_agent import generate_reply
 from agents.recommendation_agent import analyze_candidate
 from agents.reference_agent import resolve_references
+from agents.search_agent import parse_query
 from agents.validation_agent import is_in_domain
 from memory.conversation_memory import (
     add_message,
     get_or_create_session,
     is_conversational_filler,
+    looks_like_analytics_question,
     looks_like_new_search,
     note_candidates_discussed,
     resolve_referenced_candidates,
@@ -29,7 +33,7 @@ from memory.conversation_memory import (
 )
 from models.candidate import candidate_to_summary
 from models.chat import ChatRequest, ChatResponse
-from rag.prompt_builder import build_chat_user_prompt
+from rag.prompt_builder import build_analytics_user_prompt, build_chat_user_prompt
 from services.candidate_store import candidate_store
 from services.search_pipeline import run_search
 
@@ -94,6 +98,55 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             session_id=state.session_id,
             reply=OUT_OF_DOMAIN_REPLY,
             suggestions=[],
+            candidate_ids=[],
+            candidates=[],
+        )
+
+    # -- 1.5. Analytics Agent: aggregate/statistical questions over the
+    #         WHOLE candidate pool ("how many Python developers do we
+    #         have", "average experience for the DevOps job"). These need a
+    #         real count/stat computed over every candidate, not just
+    #         whatever a single ranked search happens to retrieve -- so this
+    #         branch skips the normal search/retrieval path entirely and
+    #         answers from Python-computed numbers instead.
+    if looks_like_analytics_question(message):
+        try:
+            filter_intent = await asyncio.to_thread(parse_query, message)
+        except Exception:
+            logger.exception("Intent parsing failed for analytics question=%r", message)
+            filter_intent = {}
+
+        filtered = filter_candidates(
+            candidate_store.all(),
+            skills=filter_intent.get("requiredSkills") or None,
+            designation=filter_intent.get("designation"),
+            location=filter_intent.get("location"),
+            availability=filter_intent.get("availability"),
+            min_experience=filter_intent.get("minExperience"),
+            max_experience=filter_intent.get("maxExperience"),
+        )
+        stats = compute_summary_stats(filtered)
+
+        analytics_prompt = build_analytics_user_prompt(
+            message=message,
+            filter_intent=filter_intent,
+            stats=stats,
+            total_pool_size=candidate_store.count,
+        )
+        try:
+            agent_result = await asyncio.to_thread(generate_reply, analytics_prompt)
+        except Exception:
+            logger.exception("Chatbot Agent failed for analytics message=%r", message)
+            raise HTTPException(status_code=502, detail="Chat reply generation failed.")
+
+        reply = agent_result.get("reply", "")
+        suggestions = agent_result.get("suggestions", [])
+        add_message(state, "assistant", reply)
+
+        return ChatResponse(
+            session_id=state.session_id,
+            reply=reply,
+            suggestions=suggestions,
             candidate_ids=[],
             candidates=[],
         )

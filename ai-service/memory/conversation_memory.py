@@ -98,6 +98,25 @@ def is_conversational_filler(message: str) -> bool:
     return bool(_FILLER_RE.match(message.strip()))
 
 
+_ANALYTICS_RE = re.compile(
+    r"\bhow\s+many\b|\bcount\s+of\b|\bnumber\s+of\b|\btotal\s+(candidates|number|count)\b|"
+    r"\baverage\b|\bmedian\b|\bmost\s+common\b|\bmost\s+popular\b|\btop\s*\d+\s+skills?\b|"
+    r"\bpercentage\b|\bwhat\s+percent\b|\bbreakdown\b|\bdistribution\b|\bstatistics\b|"
+    r"\bhow\s+many\s+of\s+(them|these|those)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_analytics_question(message: str) -> bool:
+    """True for aggregate/statistical questions over the whole candidate
+    pool ("how many Python developers do we have", "average experience for
+    the DevOps job", "most common skills", "breakdown by location") -- these
+    need a real count/stat computed over ALL candidates, not just whatever a
+    single ranked search happens to retrieve (which only ever returns its
+    top-K matches, never a total)."""
+    return bool(_ANALYTICS_RE.search(message.strip()))
+
+
 _COMPARE_RE = re.compile(r"\bcompare\b", re.IGNORECASE)
 _TOP_N_RE = re.compile(r"\btop\s*(\d+|one|two|three|four|five)\b", re.IGNORECASE)
 _ALL_RE = re.compile(
