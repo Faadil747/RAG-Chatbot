@@ -106,7 +106,18 @@ def _completion_content(
         kwargs["response_format"] = {"type": "json_object"}
 
     completion = client.chat.completions.create(**kwargs)
-    return completion.choices[0].message.content or ""
+    choice = completion.choices[0]
+    content = choice.message.content or ""
+    if not content:
+        # A reasoning model (e.g. DeepSeek's) can spend its entire max_tokens
+        # budget on internal reasoning before ever writing the answer,
+        # yielding a "successful" (HTTP 200) completion with empty content
+        # and finish_reason "length". Silently returning "" here would let
+        # _call_with_fallback treat that as a real (if unparseable) answer
+        # and never try the next provider in the chain -- raise instead so
+        # the existing fallback logic actually kicks in.
+        raise RuntimeError(f"Empty completion content from '{provider}' (finish_reason={choice.finish_reason!r})")
+    return content
 
 
 def _call_with_fallback(
@@ -177,7 +188,7 @@ def chat_json(
     user: str,
     *,
     temperature: float = 0.2,
-    max_tokens: int = 4096,
+    max_tokens: int = 8192,
     model: str | None = None,
 ) -> dict[str, Any]:
     """Send a system+user prompt to the LLM and parse a JSON object back.
@@ -186,6 +197,21 @@ def chat_json(
     model is constrained to emit valid JSON. On a parse failure, retries
     exactly once with a sterner instruction appended to the user prompt
     (still going through the full provider fallback chain).
+
+    max_tokens defaults higher than the more typical 2-4k because our
+    primary provider's model reasons internally before answering (its
+    `reasoning_content`, which we never read), and that reasoning eats into
+    the same token budget as the actual JSON content. Observed in practice:
+    one ordinary resume-parsing call spent ~5500 tokens "thinking" before
+    writing ~1600 tokens of real output -- and that reasoning length is
+    non-deterministic per call, so a tighter budget intermittently produces
+    an empty completion (finish_reason "length", zero content) instead of a
+    parse error, which retrying with a sterner prompt cannot fix since the
+    problem was never the prompt wording. Deliberately NOT pushed higher
+    than this: raising the ceiling further just gives the model room to
+    reason even longer (observed calls taking 60-90s+ at 16384), trading
+    reliability for latency that compounds badly across the 3 sequential
+    calls a single resume upload makes.
     """
     raw = _call_with_fallback(system, user, temperature=temperature, max_tokens=max_tokens, model=model, json_mode=True)
     try:

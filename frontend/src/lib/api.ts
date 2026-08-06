@@ -114,10 +114,10 @@ export function listJobs(): Promise<JobListResponse> {
   return request<JobListResponse>('/jobs');
 }
 
-export function createJob(title: string, description: string): Promise<Job> {
+export function createJob(title: string, description: string, requiredSkills: string[] = []): Promise<Job> {
   return request<Job>('/jobs', {
     method: 'POST',
-    body: JSON.stringify({ title, description }),
+    body: JSON.stringify({ title, description, requiredSkills }),
   });
 }
 

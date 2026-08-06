@@ -1,10 +1,12 @@
 """
 Ranking Agent: deterministic Python scoring, NOT an LLM call.
 
-Computes 0-100 sub-scores per candidate against the parsed search intent,
+Computes 0-100 sub-scores per candidate against the parsed search/job intent,
 then blends them into a single `matchScore` via a fixed weighted average.
-Weights are named constants (skill/tech/designation weighted highest,
-freshness weighted lowest) so the ranking logic is transparent and testable.
+This is the executable form of the criteria documented in
+`docs/CANDIDATE_SCORING_CRITERIA.md` -- if you change a weight or formula
+here, update that doc in the same change so it stays a true description of
+what the system does.
 """
 from __future__ import annotations
 
@@ -13,16 +15,79 @@ import re
 from datetime import datetime, timezone
 
 # -- weights (must sum to 1.0) ----------------------------------------------
+# See docs/CANDIDATE_SCORING_CRITERIA.md for the rationale behind each weight.
 
-SKILL_MATCH_WEIGHT = 0.22
-DESIGNATION_MATCH_WEIGHT = 0.18
-TECHNOLOGY_MATCH_WEIGHT = 0.18
+SKILL_MATCH_WEIGHT = 0.20
+TECHNOLOGY_MATCH_WEIGHT = 0.14
+DESIGNATION_MATCH_WEIGHT = 0.14
 EXPERIENCE_MATCH_WEIGHT = 0.15
-INDUSTRY_MATCH_WEIGHT = 0.12
-EDUCATION_MATCH_WEIGHT = 0.10
+INDUSTRY_MATCH_WEIGHT = 0.09
+EDUCATION_MATCH_WEIGHT = 0.08
+LOCATION_MATCH_WEIGHT = 0.08
+AVAILABILITY_MATCH_WEIGHT = 0.07
 FRESHNESS_WEIGHT = 0.05
 
 _NEUTRAL_SCORE = 50.0  # used when the intent doesn't constrain a dimension
+
+# -- skill/technology term matching ------------------------------------------
+#
+# Required skills are matched against a candidate's skills using, in order:
+#   1. Exact match (after normalization) -> full credit.
+#   2. Known alias/synonym match (e.g. "js" == "javascript") -> full credit.
+#   3. Close fuzzy match (typo-level, ratio >= 0.88) -> partial credit.
+# Earlier versions used a raw substring check ("java" in "javascript") for
+# partial credit, which silently matched unrelated skills that happen to
+# share a prefix (Java/JavaScript, C/C++/C#, Go/Django, R/React...). That is
+# a correctness bug, not a feature -- removed in favor of the alias table
+# below plus whole-term fuzzy matching.
+SKILL_ALIASES: dict[str, str] = {
+    "js": "javascript", "javascript": "javascript",
+    "ts": "typescript", "typescript": "typescript",
+    "reactjs": "react", "react.js": "react", "react": "react",
+    "nodejs": "node", "node.js": "node", "node": "node",
+    "vuejs": "vue", "vue.js": "vue",
+    "angularjs": "angular", "angular": "angular",
+    "postgres": "postgresql", "postgresql": "postgresql", "psql": "postgresql",
+    "mongo": "mongodb", "mongodb": "mongodb",
+    "k8s": "kubernetes", "kubernetes": "kubernetes",
+    "ml": "machinelearning", "machinelearning": "machinelearning",
+    "ai": "artificialintelligence", "artificialintelligence": "artificialintelligence",
+    "aws": "aws", "amazonwebservices": "aws",
+    "gcp": "gcp", "googlecloud": "gcp", "googlecloudplatform": "gcp",
+    "azure": "azure", "microsoftazure": "azure",
+    "cicd": "cicd", "ci/cd": "cicd", "continuousintegration": "cicd",
+    "restapi": "restapi", "restfulapi": "restapi", "rest": "restapi",
+    "dotnet": "dotnet", ".net": "dotnet", "csharp": "csharp", "c#": "csharp",
+    "golang": "go", "go": "go",
+    "cpp": "cpp", "c++": "cpp",
+    "powerbi": "powerbi", "power bi": "powerbi",
+    "mssql": "mssql", "sqlserver": "mssql",
+    "gitops": "git", "git": "git",
+    "nextjs": "next", "next.js": "next",
+    "expressjs": "express", "express.js": "express",
+    "django": "django", "flask": "flask",
+    "tensorflow": "tensorflow", "pytorch": "pytorch",
+    "nlp": "naturallanguageprocessing",
+    "sql": "sql",
+}
+
+# -- common Indian city name variants, so "Bangalore" and "Bengaluru" (or
+# "Gurgaon"/"Gurugram", "Delhi"/"NCR", etc.) are treated as the same place
+# instead of scoring a location mismatch.
+CITY_ALIASES: dict[str, str] = {
+    "bangalore": "bengaluru", "bengaluru": "bengaluru",
+    "bombay": "mumbai", "mumbai": "mumbai",
+    "madras": "chennai", "chennai": "chennai",
+    "gurgaon": "gurugram", "gurugram": "gurugram",
+    "newdelhi": "delhi", "delhi": "delhi", "delhincr": "delhi", "ncr": "delhi",
+    "calcutta": "kolkata", "kolkata": "kolkata",
+    "trivandrum": "thiruvananthapuram", "thiruvananthapuram": "thiruvananthapuram",
+    "pondicherry": "puducherry", "puducherry": "puducherry",
+    "cochin": "kochi", "kochi": "kochi",
+    "poona": "pune", "pune": "pune",
+}
+
+_NOTICE_UNIT_DAYS = {"day": 1.0, "week": 7.0, "month": 30.0}
 
 
 def _normalize(term: str) -> str:
@@ -33,22 +98,49 @@ def _tokenize(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9+#.]+", (text or "").lower()))
 
 
+def _canonical(norm_term: str) -> str:
+    return SKILL_ALIASES.get(norm_term, norm_term)
+
+
+def _term_match_credit(required_term: str, candidate_norms: set[str], candidate_canons: set[str]) -> float:
+    """1.0 for an exact/alias match, 0.85 for a close fuzzy match (typos,
+    minor formatting differences), 0.0 otherwise. Deliberately NOT a
+    substring check -- see the module docstring above."""
+    norm_req = _normalize(required_term)
+    if not norm_req:
+        return 0.0
+    if norm_req in candidate_norms or _canonical(norm_req) in candidate_canons:
+        return 1.0
+    if len(norm_req) >= 4:
+        best = 0.0
+        for cn in candidate_norms:
+            if len(cn) < 4:
+                continue
+            ratio = difflib.SequenceMatcher(None, norm_req, cn).ratio()
+            if ratio > best:
+                best = ratio
+        if best >= 0.88:
+            return 0.85
+    return 0.0
+
+
 def _skill_overlap_score(required: list[str], candidate_skills: list[str]) -> float:
     if not required:
         return _NEUTRAL_SCORE
-    normalized_candidate = {_normalize(s) for s in candidate_skills}
-    matched = 0
-    for req in required:
-        norm_req = _normalize(req)
-        if not norm_req:
-            continue
-        if norm_req in normalized_candidate:
-            matched += 1
-            continue
-        # partial/substring credit, e.g. "react" matches "reactjs"
-        if any(norm_req in cs or cs in norm_req for cs in normalized_candidate if cs):
-            matched += 0.6
+    candidate_norms = {_normalize(s) for s in candidate_skills if s}
+    candidate_canons = {_canonical(n) for n in candidate_norms}
+    matched = sum(_term_match_credit(req, candidate_norms, candidate_canons) for req in required)
     return round(min(100.0, (matched / len(required)) * 100), 1)
+
+
+def _technology_match_score(required_skills: list[str], keywords: list[str], technology_stack: list[str]) -> float:
+    terms = list(required_skills or []) + list(keywords or [])
+    if not terms:
+        return _NEUTRAL_SCORE
+    stack_norms = {_normalize(t) for t in technology_stack if t}
+    stack_canons = {_canonical(n) for n in stack_norms}
+    matched = sum(_term_match_credit(term, stack_norms, stack_canons) for term in terms)
+    return round(min(100.0, (matched / len(terms)) * 100), 1)
 
 
 def _experience_match_score(
@@ -111,19 +203,77 @@ def _keyword_overlap_score(query_terms: list[str] | str | None, haystack_texts: 
     return round(min(100.0, (len(overlap) / len(query_tokens)) * 100), 1)
 
 
-def _technology_match_score(required_skills: list[str], keywords: list[str], technology_stack: list[str]) -> float:
-    terms = list(required_skills or []) + list(keywords or [])
-    if not terms:
+def _location_canon(loc: str) -> str:
+    norm = re.sub(r"[^a-z]", "", (loc or "").lower())
+    return CITY_ALIASES.get(norm, norm)
+
+
+def _location_match_score(intent_location: str | None, candidate_location: str) -> float:
+    if not intent_location or not intent_location.strip():
         return _NEUTRAL_SCORE
-    normalized_stack = {_normalize(t) for t in technology_stack}
-    matched = 0
-    for term in terms:
-        norm_term = _normalize(term)
-        if not norm_term:
-            continue
-        if norm_term in normalized_stack or any(norm_term in t or t in norm_term for t in normalized_stack if t):
-            matched += 1
-    return round(min(100.0, (matched / len(terms)) * 100), 1)
+    intent_l = intent_location.strip().lower()
+    if "remote" in intent_l or "anywhere" in intent_l or "work from home" in intent_l:
+        return 100.0
+
+    cand_l = (candidate_location or "").strip()
+    if not cand_l:
+        return _NEUTRAL_SCORE  # unknown location -- don't penalize on missing data
+
+    intent_canon = _location_canon(intent_location)
+    cand_canon = _location_canon(cand_l)
+    if not intent_canon or not cand_canon:
+        return _NEUTRAL_SCORE
+    if intent_canon == cand_canon or intent_canon in cand_canon or cand_canon in intent_canon:
+        return 100.0
+
+    ratio = difflib.SequenceMatcher(None, intent_canon, cand_canon).ratio()
+    if ratio >= 0.6:
+        return round(ratio * 100, 1)
+    # Different city entirely -- not a hard zero, since relocation/hybrid
+    # arrangements are common; scored low but not disqualifying.
+    return 20.0
+
+
+def _availability_to_days(text: str | None) -> float | None:
+    """Best-effort parse of a free-text availability string into an
+    approximate number of days until the candidate can join. Returns None
+    when the text doesn't express a resolvable timeframe (e.g. "Not
+    Specified", "Available from <a date we can't parse>")."""
+    if not text:
+        return None
+    t = text.strip().lower()
+    if not t or "not specified" in t:
+        return None
+    if "immediate" in t or "available now" in t or "open to work" in t:
+        return 0.0
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(day|week|month)", t)
+    if m:
+        return float(m.group(1)) * _NOTICE_UNIT_DAYS.get(m.group(2), 1.0)
+    return None
+
+
+def _availability_match_score(intent_availability: str | None, candidate_availability: str) -> float:
+    if not intent_availability or not intent_availability.strip():
+        return _NEUTRAL_SCORE
+
+    target_days = _availability_to_days(intent_availability)
+    candidate_days = _availability_to_days(candidate_availability)
+
+    if target_days is None:
+        # The recruiter mentioned availability but not a concrete timeframe
+        # (e.g. just "notice period"). Reward candidates who at least have a
+        # known availability over ones with none on file.
+        return 75.0 if candidate_days is not None else _NEUTRAL_SCORE
+
+    if candidate_days is None:
+        return 40.0  # unknown -- a mild risk flag, not a hard penalty
+
+    if candidate_days <= target_days:
+        return 100.0
+
+    distance_days = candidate_days - target_days
+    score = 100.0 - (distance_days / 7.0) * 10.0  # -10 pts per week beyond what was asked for
+    return round(max(0.0, min(100.0, score)), 1)
 
 
 def _freshness_score(uploaded_at: str | None) -> float:
@@ -148,7 +298,9 @@ def _freshness_score(uploaded_at: str | None) -> float:
 
 def score_candidate(intent: dict, candidate: dict) -> dict:
     """Compute all sub-scores + the blended matchScore for one candidate
-    against the parsed search intent. Returns a dict with subScores + matchScore."""
+    against the parsed search/job intent. Returns a dict with subScores +
+    matchScore. See docs/CANDIDATE_SCORING_CRITERIA.md for the full rubric
+    this function implements."""
     skills = candidate.get("skills") or {}
     candidate_skills = list(skills.get("primary") or []) + list(skills.get("secondary") or [])
 
@@ -177,6 +329,9 @@ def score_candidate(intent: dict, candidate: dict) -> dict:
         required_skills, intent.get("keywords") or [], candidate.get("technologyStack") or []
     )
 
+    location_match = _location_match_score(intent.get("location"), candidate.get("location", ""))
+    availability_match = _availability_match_score(intent.get("availability"), candidate.get("availability", ""))
+
     freshness = _freshness_score(candidate.get("uploadedAt"))
 
     match_score = (
@@ -186,6 +341,8 @@ def score_candidate(intent: dict, candidate: dict) -> dict:
         + experience_match * EXPERIENCE_MATCH_WEIGHT
         + industry_match * INDUSTRY_MATCH_WEIGHT
         + education_match * EDUCATION_MATCH_WEIGHT
+        + location_match * LOCATION_MATCH_WEIGHT
+        + availability_match * AVAILABILITY_MATCH_WEIGHT
         + freshness * FRESHNESS_WEIGHT
     )
 
@@ -197,6 +354,8 @@ def score_candidate(intent: dict, candidate: dict) -> dict:
             "industryMatch": industry_match,
             "educationMatch": education_match,
             "technologyMatch": technology_match,
+            "locationMatch": location_match,
+            "availabilityMatch": availability_match,
             "freshnessScore": freshness,
         },
         "matchScore": round(max(0.0, min(100.0, match_score)), 1),

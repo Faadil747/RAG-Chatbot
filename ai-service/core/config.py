@@ -55,12 +55,8 @@ class Settings:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     @property
-    def faiss_index_path(self) -> Path:
-        return self.data_dir / "faiss.index"
-
-    @property
-    def vector_ids_path(self) -> Path:
-        return self.data_dir / "vector_ids.json"
+    def qdrant_path(self) -> Path:
+        return self.data_dir / "qdrant"
 
     @property
     def candidates_store_path(self) -> Path:

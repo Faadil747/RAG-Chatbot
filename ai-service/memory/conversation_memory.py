@@ -100,7 +100,12 @@ def is_conversational_filler(message: str) -> bool:
 
 _COMPARE_RE = re.compile(r"\bcompare\b", re.IGNORECASE)
 _TOP_N_RE = re.compile(r"\btop\s*(\d+|one|two|three|four|five)\b", re.IGNORECASE)
-_ALL_RE = re.compile(r"\ball\s+of\s+them\b|\bboth\b|\beveryone\b", re.IGNORECASE)
+_ALL_RE = re.compile(
+    r"\ball\s+of\s+them\b|\bboth\b|\beveryone\b|\bamong\s+them\b|\bof\s+these\b|"
+    r"\bof\s+those\b|\bthese\s+candidates\b|\bthose\s+candidates\b|\bany\s+of\s+them\b|"
+    r"\bwhich\s+of\s+(them|these|those)\b|\bwho\s+(of|among)\s+(them|these|those)\b",
+    re.IGNORECASE,
+)
 
 _WORD_TO_NUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
 
@@ -157,10 +162,19 @@ def resolve_referenced_candidates(state: ConversationState, message: str, store_
         if resolved:
             return resolved
 
-    # "this candidate" / "that candidate" / "him" / "her" / "them" -> most recently discussed
-    if re.search(r"\b(this|that|him|her|them|it)\b", lower):
+    # Singular reference ("this candidate" / "that candidate" / "him" / "her" / "it")
+    # -> most recently discussed one candidate.
+    if re.search(r"\b(this|that|him|her|it)\b", lower):
         if state.last_candidates_discussed:
             return state.last_candidates_discussed[:1]
+
+    # Plural reference ("them" / "they" / "these" / "those") -> the whole
+    # recent pool, not just the single most-recent candidate -- "does he
+    # know AWS" is about one person, but "do they know AWS" or "which of
+    # them" is asking across the group.
+    if re.search(r"\b(them|they|these|those)\b", lower):
+        if pool_ids:
+            return pool_ids[: min(5, len(pool_ids))]
 
     # Name matching: check if any known candidate's name appears in the message.
     name_matches: list[str] = []

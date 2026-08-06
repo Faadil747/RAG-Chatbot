@@ -21,10 +21,26 @@ const NEUTRAL_INTENT: JobIntent = {
 const createJobSchema = z.object({
   title: z.string().trim().min(1, "title is required"),
   description: z.string().trim().min(1, "description is required"),
+  requiredSkills: z.array(z.string().trim().min(1)).optional().default([]),
 });
 
+/** Case-insensitive de-dupe that keeps first-seen casing -- recruiter-typed
+ * skills win over however the LLM happened to capitalize the same skill
+ * when it independently inferred it from the description text. */
+function mergeSkills(explicit: string[], inferred: string[]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const skill of [...explicit, ...inferred]) {
+    const key = skill.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(skill);
+  }
+  return merged;
+}
+
 export const createJob = asyncHandler(async (req, res) => {
-  const { title, description } = createJobSchema.parse(req.body);
+  const { title, description, requiredSkills } = createJobSchema.parse(req.body);
 
   // Job creation must not hard-fail if ai-service/the LLM is down: jobId is
   // required on every candidate upload now, so blocking job creation here
@@ -37,6 +53,10 @@ export const createJob = asyncHandler(async (req, res) => {
   } catch (err) {
     console.warn("[jobs] description parsing failed, falling back to neutral intent:", (err as Error).message);
   }
+
+  // Recruiter-specified skills are grounded, not inferred -- merge them in
+  // regardless of whether LLM parsing succeeded above.
+  intent = { ...intent, requiredSkills: mergeSkills(requiredSkills, intent.requiredSkills) };
 
   const job = await prisma.job.create({
     data: {

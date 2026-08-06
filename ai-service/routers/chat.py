@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 
 from agents.chatbot_agent import generate_reply
 from agents.recommendation_agent import analyze_candidate
+from agents.reference_agent import resolve_references
 from agents.validation_agent import is_in_domain
 from memory.conversation_memory import (
     add_message,
@@ -112,6 +113,32 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     treat_as_new_search = looks_like_new_search(message)
     if not treat_as_new_search:
         resolved_ids = resolve_referenced_candidates(state, message, candidate_store.get)
+
+        if not resolved_ids and not is_conversational_filler(message) and state.last_candidates_discussed:
+            # The fast regex heuristics above (ordinals, "compare", pronouns,
+            # name matches) couldn't confidently resolve this follow-up, but
+            # there IS conversation history to resolve against -- ask the
+            # Reference Resolution Agent, which actually reads the
+            # conversation and candidate names to disambiguate phrasing the
+            # regexes can't anticipate ("does she know AWS", "who among them
+            # has the most experience", "what about the one from TCS").
+            try:
+                known_candidates = candidate_store.get_many(state.last_candidates_discussed[:10])
+                history_text = "\n".join(
+                    f"{'Recruiter' if turn.get('role') == 'user' else 'Assistant'}: {turn.get('content', '')}"
+                    for turn in state.messages[-8:]
+                ) or "(no prior turns)"
+                resolution = await asyncio.to_thread(resolve_references, history_text, known_candidates, message)
+                llm_resolved = [cid for cid in resolution.get("candidateIds", []) if candidate_store.get(cid)]
+                if llm_resolved:
+                    resolved_ids = llm_resolved
+                elif resolution.get("isNewSearch"):
+                    treat_as_new_search = True
+            except Exception:
+                logger.exception("Reference Resolution Agent failed for message=%r", message)
+                # Fall through -- the empty-retrieval check below still
+                # catches this and treats it as a new search.
+
         retrieved_candidates = candidate_store.get_many(resolved_ids)
         if not retrieved_candidates and not is_conversational_filler(message):
             treat_as_new_search = True

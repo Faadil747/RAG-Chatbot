@@ -3,6 +3,7 @@ import { Briefcase, MapPin, Plus, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { TagsInput } from '@/components/ui/tags-input';
 import {
   Select,
   SelectContent,
@@ -41,13 +42,14 @@ Requirements:
 - Experience with Docker and cloud deployment (AWS/GCP) is a plus`;
 
 interface CreateJobDialogProps {
-  createJob: (title: string, description: string) => Promise<Job>;
+  createJob: (title: string, description: string, requiredSkills: string[]) => Promise<Job>;
   isCreating: boolean;
 }
 
 export function CreateJobDialog({ createJob, isCreating }: CreateJobDialogProps) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
+  const [requiredSkills, setRequiredSkills] = useState<string[]>([]);
   const [location, setLocation] = useState('');
   const [employmentType, setEmploymentType] = useState('');
   const [experienceLevel, setExperienceLevel] = useState('');
@@ -56,6 +58,7 @@ export function CreateJobDialog({ createJob, isCreating }: CreateJobDialogProps)
 
   function reset() {
     setTitle('');
+    setRequiredSkills([]);
     setLocation('');
     setEmploymentType('');
     setExperienceLevel('');
@@ -71,6 +74,10 @@ export function CreateJobDialog({ createJob, isCreating }: CreateJobDialogProps)
     // fields -- folding them into the description text lets the existing
     // LLM parser (which already extracts location/designation/experience
     // from free text) pick them up naturally, with no schema change needed.
+    // Required skills, in contrast, are sent explicitly (not folded into the
+    // description) -- the backend merges them directly into the parsed
+    // intent, so scoring is grounded in what the recruiter actually typed
+    // rather than however the LLM happens to parse them out of prose.
     const metaLines = [
       location.trim() && `Location: ${location.trim()}`,
       employmentType && `Employment Type: ${employmentType}`,
@@ -79,7 +86,7 @@ export function CreateJobDialog({ createJob, isCreating }: CreateJobDialogProps)
     const fullDescription = metaLines.length > 0 ? `${metaLines.join('\n')}\n\n${description.trim()}` : description.trim();
 
     try {
-      await createJob(title.trim(), fullDescription);
+      await createJob(title.trim(), fullDescription, requiredSkills);
       reset();
       setOpen(false);
     } catch (err) {
@@ -120,6 +127,18 @@ export function CreateJobDialog({ createJob, isCreating }: CreateJobDialogProps)
           <div>
             <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Job title</label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Senior Backend Engineer" />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Required skills</label>
+            <TagsInput
+              value={requiredSkills}
+              onChange={setRequiredSkills}
+              placeholder="Type a skill and press Enter (e.g. Python, AWS)..."
+            />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              These directly drive skill-match scoring, in addition to whatever the description implies.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">

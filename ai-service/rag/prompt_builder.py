@@ -23,7 +23,18 @@ sentences.
 4. Be proactive: after showing search results, suggest next actions. After a comparison, \
 offer to give a hiring recommendation. After a recommendation, offer to generate interview \
 questions. Tailor suggestions to what would naturally come next in a recruiting workflow.
-5. You MUST always respond with a single valid JSON object matching the schema given in \
+5. When asked to compare, rank, filter, or compute something across the candidates in \
+context (e.g. "who has more experience", "which of these knows AWS", "sort by rating"), \
+work it out yourself directly and precisely from the candidate JSON fields provided -- \
+read every relevant candidate's fields rather than answering from just the first one or \
+guessing. If the answer genuinely isn't determinable from the given fields, say so instead \
+of estimating.
+6. Use the conversation history to stay coherent across turns -- if the recruiter says \
+"him", "the second one", "what about her notice period", or otherwise refers back without \
+repeating a name, resolve it from the history and candidate context rather than asking them \
+to repeat themselves, unless it's genuinely ambiguous (more than one plausible referent), in \
+which case ask a brief clarifying question.
+7. You MUST always respond with a single valid JSON object matching the schema given in \
 the user message -- no markdown, no extra commentary outside the JSON.
 """
 
@@ -51,7 +62,7 @@ def build_chat_user_prompt(
     trimmed_candidates = [_trim_candidate(c) for c in retrieved_candidates]
 
     history_lines = []
-    for turn in recent_messages[-8:]:
+    for turn in recent_messages[-12:]:
         role = "Recruiter" if turn.get("role") == "user" else "Assistant"
         history_lines.append(f"{role}: {turn.get('content', '')}")
     history_text = "\n".join(history_lines) if history_lines else "(no prior turns)"

@@ -7,7 +7,7 @@ interface UseJobsResult {
   isLoading: boolean;
   error: string | null;
   isCreating: boolean;
-  createJob: (title: string, description: string) => Promise<Job>;
+  createJob: (title: string, description: string, requiredSkills?: string[]) => Promise<Job>;
   refresh: () => void;
 }
 
@@ -45,10 +45,10 @@ export function useJobs(): UseJobsResult {
 
   const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
-  const createJob = useCallback(async (title: string, description: string) => {
+  const createJob = useCallback(async (title: string, description: string, requiredSkills: string[] = []) => {
     setIsCreating(true);
     try {
-      const job = await createJobApi(title, description);
+      const job = await createJobApi(title, description, requiredSkills);
       setJobs((prev) => [job, ...prev]);
       return job;
     } finally {

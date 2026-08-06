@@ -14,13 +14,16 @@ venv/
 !.env.example
 
 # ai-service local vector store / index (regenerated at runtime)
-ai-service/data/faiss.index
-ai-service/data/vector_ids.json
+ai-service/data/qdrant/
 ai-service/data/candidates_store.json
 
 # backend uploaded resumes (local dev storage)
 backend/uploads/*
 !backend/uploads/.gitkeep
+
+# local embedded Postgres (pgserver fallback when no Docker/Postgres install
+# is available -- see README §14)
+.pgdata/
 
 # editor/OS
 .vscode/

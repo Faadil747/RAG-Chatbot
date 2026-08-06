@@ -73,6 +73,8 @@ export interface ScoreBreakdown {
   industryMatch: number;
   educationMatch: number;
   technologyMatch: number;
+  locationMatch: number;
+  availabilityMatch: number;
   freshnessScore: number;
 }
 

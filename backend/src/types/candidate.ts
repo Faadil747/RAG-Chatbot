@@ -116,6 +116,8 @@ export interface JobMatchBreakdown {
   industryMatch: number;
   educationMatch: number;
   technologyMatch: number;
+  locationMatch: number;
+  availabilityMatch: number;
   freshnessScore: number;
 }
 
@@ -139,15 +141,7 @@ export interface SearchResult {
   candidateId: string;
   rank: number;
   matchScore: number;
-  breakdown: {
-    skillMatch: number;
-    experienceMatch: number;
-    designationMatch: number;
-    industryMatch: number;
-    educationMatch: number;
-    technologyMatch: number;
-    freshnessScore: number;
-  };
+  breakdown: JobMatchBreakdown;
   candidate: CandidateSummary;
   justification: Justification | null;
 }

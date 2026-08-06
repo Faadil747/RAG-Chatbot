@@ -3,7 +3,7 @@ The shared natural-language candidate search pipeline used by both
 POST /ai/search and the "new search" path inside POST /ai/chat.
 
 Pipeline: Candidate Search Agent (query -> structured intent) -> embed a
-reformulated query -> FAISS shortlist -> deterministic Ranking Agent ->
+reformulated query -> Qdrant shortlist -> deterministic Ranking Agent ->
 Recommendation Agent for ranks 1-3.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import logging
 from agents.ranking_agent import rank_candidates
 from agents.recommendation_agent import analyze_candidate
 from agents.search_agent import build_reformulated_query, parse_query
-from core.embeddings import embed_text
+from core.embeddings import QUERY_PREFIX, embed_text
 from models.candidate import candidate_to_summary
 from services.candidate_store import candidate_store
 
@@ -36,7 +36,7 @@ async def run_search(query: str, top_k: int = 10, with_justifications: bool = Tr
     intent = parse_query(query)
 
     reformulated = build_reformulated_query(query, intent)
-    query_vector = embed_text(reformulated)
+    query_vector = embed_text(reformulated, prefix=QUERY_PREFIX)
 
     shortlist_hits = candidate_store.search_vectors(query_vector, SHORTLIST_SIZE)
     shortlist_ids = [cid for cid, _score in shortlist_hits]

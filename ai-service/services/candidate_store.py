@@ -8,8 +8,8 @@ in-process "database" for this service:
   - `data/candidates_store.json` -- full candidate JSON (camelCase, contract
     shape) keyed by id, plus the two internal-only fields `uploadedAt` and
     `embeddingText`.
-  - `data/faiss.index` + `data/vector_ids.json` -- the FAISS vector index
-    and its parallel row-order id list.
+  - `data/qdrant/` -- local (embedded, file-based) Qdrant collection storing
+    the Nomic embedding vectors.
 
 Both are loaded into memory at startup and written straight through on
 every index/delete op. All writes go through `self._lock` (an
@@ -37,7 +37,7 @@ def _now_iso() -> str:
 class CandidateStore:
     def __init__(self) -> None:
         self.candidates: dict[str, dict] = {}
-        self.vector_store = VectorStore(settings.faiss_index_path, settings.vector_ids_path)
+        self.vector_store = VectorStore(settings.qdrant_path)
         self._lock = asyncio.Lock()
 
     # -- lifecycle -----------------------------------------------------
@@ -57,14 +57,14 @@ class CandidateStore:
 
         self.vector_store.load()
 
-        # Defensive resync: if the JSON store and FAISS diverge (e.g. a
-        # process crash mid-write), trust the JSON store and rebuild FAISS.
+        # Defensive resync: if the JSON store and Qdrant diverge (e.g. a
+        # process crash mid-write), trust the JSON store and rebuild Qdrant.
         store_ids = set(self.candidates.keys())
         index_ids = set(self.vector_store.ids)
         if store_ids != index_ids:
             logger.warning(
-                "candidates_store.json and FAISS index are out of sync "
-                "(%d vs %d ids); rebuilding FAISS from the JSON store.",
+                "candidates_store.json and Qdrant collection are out of sync "
+                "(%d vs %d ids); rebuilding Qdrant from the JSON store.",
                 len(store_ids), len(index_ids),
             )
             self._rebuild_index_from_store()

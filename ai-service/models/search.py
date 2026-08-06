@@ -29,6 +29,8 @@ class SubScores(CamelModel):
     industry_match: float = 0.0
     education_match: float = 0.0
     technology_match: float = 0.0
+    location_match: float = 0.0
+    availability_match: float = 0.0
     freshness_score: float = 0.0
 
 

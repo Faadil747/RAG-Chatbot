@@ -8,8 +8,13 @@ python-docx==1.1.2
 pytesseract==0.3.13
 pdf2image==1.17.0
 sentence-transformers==3.3.1
-faiss-cpu==1.9.0.post1
+einops==0.8.0
+qdrant-client==1.19.0
 groq==0.13.1
 openai==1.58.1
 numpy==1.26.4
 python-dotenv==1.0.1
+
+# Optional: local embedded Postgres fallback for dev environments with no
+# Docker and no system Postgres install. See scripts/start_local_db.py.
+pgserver==0.1.4
