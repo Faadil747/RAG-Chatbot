@@ -814,13 +814,14 @@ Three deploys, in this order: **Render Postgres → Render ai-service → Render
 
 ### 16.4 Vercel — frontend
 
-1. **New Project** → import this repo → **Root Directory**: `frontend`.
+1. **New Project** → import this repo → **Root Directory**: `frontend`. If Vercel offers a "Services" / monorepo preset that also tries to deploy `backend`, don't use it — decline/skip that and import `frontend` alone as a single plain project. The backend stays on Render (it needs a persistent Postgres connection, Prisma, and a persistent disk — not a fit for Vercel's serverless model).
 2. Framework preset: **Vite**. Build command: `npm run build` (runs `tsc -b && vite build`). Output directory: `dist`.
 3. **Environment variable**:
    ```
    VITE_API_BASE_URL=<backend's Render URL, from §16.3>/api
    ```
 4. Deploy. Copy the production URL Vercel assigns.
+5. `frontend/vercel.json` (already in the repo) rewrites every path to `/index.html` — without it, loading any route other than `/` directly (or refreshing on one) 404s, because Vercel's static file server has no way to know `react-router-dom` is what's supposed to handle client-side paths like `/chatbot` or `/analytics`. Nothing to configure here; just don't delete that file.
 
 ### 16.5 Close the CORS loop
 

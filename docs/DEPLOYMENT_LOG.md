@@ -12,8 +12,8 @@
 |---|---|---|
 | PostgreSQL | Render | Provisioned |
 | ai-service | Render (`RAG-Chatbot-1`, Docker, free tier) | **Live** — `https://rag-chatbot-1-de7w.onrender.com`, healthy, boots cleanly |
-| backend | Render (Docker, free tier) | In progress — follows the same runbook shape as ai-service, no equivalent problems hit so far |
-| frontend | Vercel | In progress — import was pointed at the wrong GitHub repo; corrected, redeploying |
+| backend | Render (Docker, free tier) | In progress — hit its own two issues (Prisma/Alpine incompatibility, stale CORS_ORIGIN), see §4 |
+| frontend | Vercel (`rag-hr-chatbot`) | Deployed to `https://rag-hr-chatbot.vercel.app`, but was pointed at the wrong backend URL (see §4) until that's fixed, nothing behind it actually works yet |
 
 (Keep this table current as later steps complete — it's the fastest way to answer "what's actually live right now" without re-reading the whole log.)
 
@@ -132,9 +132,51 @@ The backend's `CORS_ORIGIN` necessarily starts as a placeholder (`http://localho
 
 ---
 
+## 4. Frontend pointed at the wrong service, then the backend's own two bugs
+
+After the Vercel repo mixup (§2) was fixed and the frontend deployed to `https://rag-hr-chatbot.vercel.app`, job creation still failed and the chatbot returned "Sorry, I ran into an error." The browser Network tab showed the actual request:
+
+```
+GET https://rag-chatbot-1-de7w.onrender.com/analytics → 404 Not Found
+```
+
+**Diagnosis:** `VITE_API_BASE_URL` had been set to the **ai-service's** URL directly, not the backend's — and without even ai-service's own `/ai` prefix, let alone the backend's `/api`. The backend deployment step (§2, "following the same runbook shape as ai-service") had actually been skipped in the rush to get the frontend live, so the only Render URL on hand got used by mistake. The frontend was never reaching Postgres at all, which is also why job creation specifically had been failing from the start — there was no backend in the loop to persist a `Job` row.
+
+Deploying the backend service surfaced two more, unrelated problems in its own logs:
+
+**Bug 1 — Prisma query engine couldn't load on Alpine:**
+```
+Error loading shared library libssl.so.1.1: No such file or directory
+  (needed by /app/node_modules/.prisma/client/libquery_engine-linux-musl.so.node)
+```
+`backend/Dockerfile` used `node:20-alpine` (musl libc) for both build and runtime stages. Prisma's musl query-engine binary needs an OpenSSL version that has to be explicitly matched via `binaryTargets` in `schema.prisma` — get it wrong (or leave it on Prisma's default guess) and the engine simply can't find the shared library it was linked against. Rather than chase the exact OpenSSL/Alpine version pairing, both Dockerfile stages were switched to `node:20-slim` (Debian, glibc) — Prisma's default engine target matches a standard glibc + OpenSSL 3.0 environment far more reliably, sidestepping the whole class of problem instead of pinning one exact fix for it.
+
+**Bug 2 — stale `CORS_ORIGIN`:**
+```
+Unhandled error: Error: Origin https://rag-hr-chatbot.vercel.app not allowed by CORS
+```
+The backend's `CORS_ORIGIN` was still on its deploy-time placeholder. Updated to the real Vercel URL per §3's table.
+
+**Bug 1's fix didn't take effect on the first redeploy** — the log still showed `libquery_engine-linux-musl.so.node` (a musl-specific filename; a genuine `node:20-slim` rebuild would have generated a `debian-openssl-*` engine instead), and every build step was logged as `CACHED`. Render had reused Docker layers from before the Dockerfile change instead of rebuilding. Fixed by using **Manual Deploy → Clear build cache & deploy** instead of a plain redeploy.
+
+**Separately, the original `RAG-Chatbot-1` Render service ended up repurposed** from running ai-service to running the backend (its Root Directory was changed from `ai-service` to `backend` in place, rather than creating a new service), while a second, new service was created for ai-service at a different URL. Not wrong, but worth being deliberate about — Render service identity (name/URL) doesn't track what code it's running; only its Root Directory setting does, so it's easy to lose track of "which service is which" after a setting change like this.
+
+**Bug 3 — Vercel import offered to also deploy the backend.** Vercel auto-detected the repo as a monorepo (`frontend` + `backend`, via its "Services" application preset) and offered to deploy both as Vercel projects. Declined — the backend has to stay on Render (Prisma + a persistent Postgres connection + a persistent disk for uploads aren't a fit for Vercel's serverless model). Re-imported as a single plain project with Root Directory `frontend` only, which also meant a new Vercel project (and thus a new `.vercel.app` URL) rather than reusing the earlier one — every service's `CORS_ORIGIN`/`VITE_API_BASE_URL` needs to track whichever URL is the one actually being used, not whichever was set first.
+
+**Bug 4 — SPA routes 404'd on direct load.** Loading `https://<vercel-url>/chatbot` directly (not by clicking a link from `/`) returned Vercel's own `404: NOT_FOUND`, not the app's styled not-found page. Vercel's static file server has no way to know `react-router-dom` handles client-side paths like `/chatbot` or `/analytics` — without a rewrite rule, only `/` (where `index.html` genuinely exists) works; every other route 404s on direct load or refresh. Fixed by adding `frontend/vercel.json`:
+```json
+{ "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }] }
+```
+This is a standard, well-known requirement for any client-side-routed SPA on Vercel (or any static host) — worth remembering it's needed *before* the first "why does refreshing break the page" report, not after.
+
+---
+
 ## Lessons for next time
 
 - **A local dev machine cannot predict container memory behavior**, especially across OS boundaries (this dev environment is Windows; Render's containers are Linux) — the two OOM rounds above could only be diagnosed from real Render deploy logs, not from anything measurable locally. Budget for at least one memory-tuning round on any service doing local ML inference on a constrained free tier.
 - **Defer heavy imports and heavy startup work whenever a health check needs to succeed fast.** The single most effective fix here wasn't shrinking anything — it was making the port bind before the expensive model load, so the platform's own boot check could pass independently of whether the model load itself was fully optimized yet.
 - **Docker `CMD` should read `$PORT` dynamically, not hardcode it**, on any platform (Render, Heroku, Railway, ...) that assigns its own port and scans for it.
 - **Double-check platform-side GitHub App repo permissions before assuming an import failure is a code or account problem** — "I added the repo" in one UI doesn't always mean the other UI's permission scope was actually updated.
+- **Don't skip a runbook step under time pressure.** The multi-round ai-service memory debugging pulled focus long enough that the backend deploy step got skipped entirely, and the frontend ended up pointed at whatever Render URL was on hand (ai-service's) instead. A quick "does every service in the topology actually exist yet?" check before moving on to the next platform would have caught this immediately instead of via a confusing 404 several steps later.
+- **Prefer Debian-based (`-slim`) over Alpine (`-musl`) Docker images for anything using Prisma**, unless there's a specific reason to need Alpine's smaller size — the musl/OpenSSL binary-target matching is a well-known, recurring source of "works in one environment, breaks in another" failures, and `-slim` avoids the whole category rather than requiring one exact pinned fix.
+- **A frontend error 3+ layers removed from its real cause (a 404 on the wrong domain) is still diagnosable fast from the Network tab** — the actual request URL immediately showed both that the wrong service was being called *and* that the wrong path convention was used, collapsing what looked like a vague "website not working" into a precise fix.

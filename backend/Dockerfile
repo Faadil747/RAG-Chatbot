@@ -1,5 +1,12 @@
+# Debian-based (glibc), not -alpine (musl): Prisma's query engine binary
+# expects glibc + a matching OpenSSL by default, and the musl build needs an
+# exact OpenSSL-version-matched `binaryTargets` entry to avoid
+# "Error loading shared library libssl.so.1.1 ... needed by
+# libquery_engine-linux-musl.so.node" at runtime. -slim sidesteps that whole
+# class of version-matching problem rather than pinning one.
+
 # ---- Build stage ----
-FROM node:20-alpine AS build
+FROM node:20-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
@@ -13,7 +20,7 @@ COPY src ./src
 RUN npm run build
 
 # ---- Runtime stage ----
-FROM node:20-alpine AS runtime
+FROM node:20-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
