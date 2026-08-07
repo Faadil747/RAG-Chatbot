@@ -4,12 +4,12 @@ from __future__ import annotations
 import io
 import logging
 
-from docx import Document
-
 logger = logging.getLogger("ai-service.parsing.docx")
 
 
 def extract_docx_text(file_bytes: bytes) -> str:
+    from docx import Document
+
     try:
         doc = Document(io.BytesIO(file_bytes))
     except Exception:

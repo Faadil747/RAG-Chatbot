@@ -16,7 +16,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
-from core.embeddings import load_model
 from models.search import HealthResponse
 from routers import analytics as analytics_router
 from routers import chat as chat_router
@@ -44,8 +43,19 @@ async def lifespan(app: FastAPI):
     # Widen it explicitly.
     asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=64))
 
-    # Load the embedding model and the candidate store (JSON + FAISS) once.
-    load_model()
+    # Load the candidate store (JSON + Qdrant) now, but NOT the embedding
+    # model -- torch/transformers/the model weights are the single heaviest
+    # thing this process imports, and loading them here blocks the port from
+    # ever binding until it's done. On a memory-constrained host that can
+    # mean the platform's boot-time port scan times out (or the process OOMs
+    # before uvicorn ever starts listening) even though the service would
+    # have come up fine once actually serving traffic. embeddings.py's
+    # embed_text()/embed_texts() already lazily load the model on first use
+    # (see _ensure_model), so skipping the eager call here just moves that
+    # cost to the first real request instead of blocking startup on it.
+    # candidate_store.load()'s own desync-repair path (if it ever needs to
+    # re-embed) goes through those same lazy-loading functions, so it stays
+    # correct either way.
     candidate_store.load()
 
     logger.info("AI service ready. %d candidates indexed.", candidate_store.count)

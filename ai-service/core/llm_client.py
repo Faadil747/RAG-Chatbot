@@ -25,16 +25,23 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-# pyrefly: ignore [missing-import]
-from groq import Groq
 from openai import APITimeoutError, OpenAI
 
 from core.config import settings
 
+if TYPE_CHECKING:
+    # pyrefly: ignore [missing-import]
+    from groq import Groq
+
 logger = logging.getLogger("ai-service.llm_client")
 
+# `groq` is only ever imported (see _build_client below) if a "groq" provider
+# is actually configured -- production runs DeepSeek-only, so this keeps the
+# groq SDK's import weight off every process that never uses it, which
+# matters on a memory-constrained deployment where every eagerly-imported
+# library competes with the embedding model for the same budget.
 _clients: dict[str, Groq | OpenAI] = {}
 
 
@@ -65,6 +72,9 @@ def _build_client(provider: str) -> Groq | OpenAI:
             max_retries=0,
         )
     if provider == "groq":
+        # pyrefly: ignore [missing-import]
+        from groq import Groq
+
         if not settings.groq_api_key:
             logger.warning("GROQ_API_KEY is not set. Calls to groq will fail until it is configured.")
         return Groq(api_key=settings.groq_api_key, timeout=timeout, max_retries=0)
