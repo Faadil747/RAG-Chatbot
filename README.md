@@ -91,7 +91,7 @@ Why two separate candidate stores instead of one shared database? The backend's 
 | AI service runtime | Python 3.11 + FastAPI + Uvicorn | Async, typed (Pydantic v2), fast to iterate on ML-adjacent code. |
 | Resume text extraction | PyMuPDF (primary) → pdfplumber (fallback) for PDF; `python-docx` for DOC/DOCX | |
 | OCR (scanned resumes) | pytesseract + pdf2image | Lighter dependency footprint than PaddleOCR (no native build toolchain); swappable, see [§5](#5-resume-parsing-pipeline). |
-| Embeddings | `sentence-transformers`, model `nomic-ai/nomic-embed-text-v1.5` (768-dim, task-prefixed: `search_document:`/`search_query:`) | Stronger retrieval quality than a generic small model; runs on CPU. |
+| Embeddings | `sentence-transformers`, model `BAAI/bge-small-en-v1.5` (384-dim, query-prefixed) | Small (~130MB), fast, strong general-purpose retrieval embedding; runs on CPU with room to spare inside a 512MB container. |
 | Vector store | Qdrant, local/embedded mode (`QdrantClient(path=...)`, file-based, no server process) | Real vector-DB semantics (upsert-by-id, no manual index rebuild) while staying zero-infra for dev; production runs it on a Render persistent disk, see [Deployment](#16-deployment-render--vercel). |
 | LLM SDKs | `openai` SDK (for RunPod/Ollama and DeepSeek, both OpenAI-compatible) + `groq` SDK (for Groq) | One file (`core/llm_client.py`) owns every LLM call — see [§8](#8-llm-provider-chain-models--keys). |
 | Embedded dev Postgres | [`pgserver`](https://pypi.org/project/pgserver/) (used only when no Docker/Postgres install is available) | Self-contained Postgres binary controllable from Python — zero-install local dev fallback. |
@@ -134,7 +134,7 @@ Why two separate candidate stores instead of one shared database? The backend's 
 │   ├── core/
 │   │   ├── llm_client.py        Single choke point for every LLM call (provider chain, see §8)
 │   │   ├── config.py             All env-driven settings
-│   │   ├── embeddings.py         Sentence-transformer loading + embedding helpers (Nomic, task-prefixed)
+│   │   ├── embeddings.py         Sentence-transformer loading + embedding helpers (BGE, query-prefixed)
 │   │   ├── vector_store.py        Local/embedded Qdrant wrapper
 │   │   ├── experience_calc.py     Deterministic experience-years math (never trust the LLM for arithmetic)
 │   │   └── parsing/               pdf_parser.py, docx_parser.py, ocr_parser.py, text_extractor.py
@@ -298,7 +298,7 @@ Resume Parser (text extraction + OCR fallback)
 Structured Candidate JSON  (agents 1-3 + deterministic math)
      │
      ▼
-Embedding Generation  (nomic-embed-text-v1.5, 768-dim, task-prefixed)
+Embedding Generation  (bge-small-en-v1.5, 384-dim, query-prefixed)
      │
      ▼
 Qdrant Vector Store  (local/embedded, cosine similarity)  ◄── candidates_store.json (full JSON, keyed by id)
@@ -321,7 +321,7 @@ Final grounded response  (reply + suggestions + candidateIds + candidates + quer
 **Every chatbot response retrieves relevant candidate data *before* generating an answer** — the model is never asked a question without first being handed the actual records it needs to answer honestly. Concretely:
 
 - **Embedding text** (`core/embeddings.py:build_candidate_embedding_text`) — built from `name + currentRole + aiSummary + skills.primary + skills.secondary + (experience role, company)* + technologyStack + suitableRoles`. This is deliberately richer than just the raw resume text: it foregrounds the *judged* signal (AI summary, categorized skills) alongside the raw facts, which makes semantic similarity searches land on relevance rather than surface keyword overlap.
-- **Vector store** (`core/vector_store.py`) — Qdrant in local/embedded mode (`QdrantClient(path=...)`, file-based, no server process), storing 768-dim Nomic vectors. Upsert-by-id is native, so there's no manual index-rebuild dance. In production it runs on a single Render instance with a persistent disk (see [Deployment](#16-deployment-render--vercel)).
+- **Vector store** (`core/vector_store.py`) — Qdrant in local/embedded mode (`QdrantClient(path=...)`, file-based, no server process), storing 384-dim BGE vectors. Upsert-by-id is native, so there's no manual index-rebuild dance. In production it runs on a single Render instance with a persistent disk (see [Deployment](#16-deployment-render--vercel)).
 - **Retriever**: for a brand-new query ("show me...", "find..."), the query is reformulated (raw query + parsed designation + skills + keywords + industry + location, pipe-joined) and embedded with the `search_query:` prefix, then Qdrant returns a similarity shortlist (top 30), which the deterministic Ranking Agent scores and sorts. For a *follow-up* in an ongoing chat ("compare top 3", "tell me more about the second one", "does she know AWS"), no new vector search happens at all — the retriever resolves candidate ids from **conversation memory** (§10) via fast regex heuristics, falling back to an LLM-backed Reference Resolution Agent for phrasing the heuristics can't confidently parse. For an *aggregate* question ("how many Java developers do we have", "average experience for the DevOps job"), retrieval bypasses ranking entirely and the deterministic Analytics Agent filters/aggregates the **whole** candidate pool instead of a single shortlist.
 - **Prompt Builder** (`rag/prompt_builder.py`) — assembles a fixed system prompt (the recruiter-assistant persona and its strict grounding rules) plus a *trimmed* JSON of the retrieved candidates (drops `resumeText`/embedding text — not useful for reasoning, just noise/cost) plus the last 12 conversation turns plus the current message, and asks for a fixed JSON response shape. Aggregate questions instead get a dedicated prompt built purely from Python-computed statistics, with the model explicitly instructed to phrase them, never recompute them.
 - **Grounding enforcement** happens at multiple layers, not just "please don't hallucinate" in the prompt: the Validation Agent gates the domain before any retrieval happens at all; the Prompt Builder physically limits what data the model can see to only the retrieved candidates (or the exact computed numbers, for analytics); and the Recommendation Agent (used for justifications/interview questions/hiring recommendations) is explicitly instructed to state honest concerns rather than paper over a weak match.
@@ -379,7 +379,7 @@ GROQ_API_KEY=your_groq_api_key_here
 GROQ_MODEL=llama-3.3-70b-versatile
 
 # Embeddings (local, no key needed — runs on CPU via sentence-transformers)
-EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
 ```
 
 To swap providers entirely (say, to self-host everything and drop DeepSeek), only `LLM_PROVIDER`/`LLM_FALLBACK_PROVIDER` and the corresponding `*_BASE_URL`/`*_MODEL`/`*_API_KEY` vars need to change — zero code changes anywhere else in the service.
@@ -652,7 +652,7 @@ Scalar columns are used for anything the Candidate List page filters/sorts on di
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | |
 | `GROQ_API_KEY` | — | Required only if `LLM_PROVIDER`/`LLM_FALLBACK_PROVIDER` is `groq` |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | |
-| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | Runs locally on CPU, no key needed |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Runs locally on CPU, no key needed. Kept deliberately small (~130MB) to fit inside a 512MB container. |
 | `DATA_DIR` | `./data` | Where `faiss.index` / `vector_ids.json` / `candidates_store.json` live |
 | `CORS_ORIGIN` | `http://localhost:4000` | Only the backend calls this service, so this is the backend's origin |
 
@@ -770,13 +770,16 @@ Three deploys, in this order: **Render Postgres → Render ai-service → Render
    DEEPSEEK_MODEL=deepseek-v4-flash
    DEEPSEEK_BASE_URL=https://api.deepseek.com
    LLM_REQUEST_TIMEOUT=40
-   EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+   EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
    DATA_DIR=/app/data
    CORS_ORIGIN=<filled in after step 16.3 — the backend's Render URL>
+   OMP_NUM_THREADS=1
    ```
    Leave `RUNPOD_*`/`GROQ_*` unset entirely. `core/config.py`'s `Settings.llm_provider` default is still `"runpod"` (a dev-time default, intentionally not changed since local dev still wants RunPod-primary) — the env var above overrides it, but if this service ever starts up giving 404s from a RunPod URL, the first thing to check is whether `LLM_PROVIDER=deepseek` actually got set.
+
+   `OMP_NUM_THREADS=1` caps PyTorch's CPU thread pool — on a free-tier instance with a fraction of a CPU core, the default (one thread per detected core) buys nothing and its per-thread stack overhead is pure waste; capping it is a real, free reduction in memory pressure, on top of the two structural fixes already baked into this repo: `requirements.txt` pins PyTorch to its CPU-only wheel (the default PyPI wheel is the much larger CUDA build, which this service never uses), and `EMBEDDING_MODEL` is `BAAI/bge-small-en-v1.5` (~130MB of weights) rather than a larger model — a heavier embedding model is the single most common way to blow through Render's free-tier 512MB cap before the server even finishes booting (symptom: the deploy log shows "no open ports detected" on repeat for several minutes, then "Out of memory," because the process OOMs while still loading the model, before `uvicorn` ever binds the port). If you outgrow the free tier's memory anyway as your candidate pool grows, upgrade this service's Render plan rather than fighting it further in code.
 5. **Health check path**: `/ai/health`.
-6. Deploy. The first boot is slow — it downloads the Nomic embedding model. Watch the logs for `"AI service ready. N candidates indexed."` before moving on.
+6. Deploy. The first boot downloads the embedding model — watch the logs for `"AI service ready. N candidates indexed."` before moving on, and check memory usage in the Render dashboard if it seems to hang (a container that OOMs while loading the model shows as endless "no open ports detected" in the logs, not an obvious crash message).
 7. Copy this service's Render URL (e.g. `https://rag-chatbot-ai.onrender.com`) — the backend needs it next.
 
 ### 16.3 Render — backend (Node/Express)

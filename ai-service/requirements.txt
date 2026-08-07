@@ -1,3 +1,15 @@
+# torch is a transitive dependency of sentence-transformers below. Without
+# this, pip resolves it from PyPI's default index, which on Linux is the
+# full CUDA-enabled build -- much larger to install and to load into memory
+# than this CPU-only service ever needs (this alone was enough to push the
+# service's memory footprint over Render's 512MB free-tier limit during
+# startup). Pointing pip at PyTorch's own CPU wheel index first, PyPI second
+# for everything else, makes the unpinned `torch` line below resolve to the
+# CPU-only build instead.
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch
+
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4

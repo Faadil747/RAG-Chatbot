@@ -1,13 +1,18 @@
 """
 Sentence-transformer embedding model, loaded once and reused.
 
-Model: nomic-ai/nomic-embed-text-v1.5 (env `EMBEDDING_MODEL`), 768-dim. We
-L2-normalize every embedding so Qdrant's cosine distance behaves correctly.
+Model: BAAI/bge-small-en-v1.5 (env `EMBEDDING_MODEL`), 384-dim, ~130MB of
+weights. Deliberately a small model: it needs to load comfortably inside a
+512MB container (Render's free tier) alongside FastAPI, the CPU-only PyTorch
+runtime, and everything else -- a larger model (this project briefly ran
+nomic-embed-text-v1.5, ~550MB of weights alone) doesn't fit that budget no
+matter how the rest of the app is tuned. We L2-normalize every embedding so
+Qdrant's cosine distance behaves correctly.
 
-Nomic's model is instruction-tuned: text must be prefixed with a task tag for
-good retrieval quality -- "search_document: " for text being indexed
-(candidates), "search_query: " for a query being searched against them. See
-https://huggingface.co/nomic-ai/nomic-embed-text-v1.5.
+BGE's retrieval convention only prefixes the QUERY side, not the documents
+being indexed -- "Represent this sentence for searching relevant passages: "
+for a search query, nothing for candidate text. See
+https://huggingface.co/BAAI/bge-small-en-v1.5.
 """
 from __future__ import annotations
 
@@ -22,10 +27,10 @@ logger = logging.getLogger("ai-service.embeddings")
 
 _model: SentenceTransformer | None = None
 
-EMBEDDING_DIM = 768  # nomic-embed-text-v1.5 output dimension
+EMBEDDING_DIM = 384  # BAAI/bge-small-en-v1.5 output dimension
 
-DOCUMENT_PREFIX = "search_document: "
-QUERY_PREFIX = "search_query: "
+DOCUMENT_PREFIX = ""
+QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 def load_model() -> SentenceTransformer:
@@ -33,7 +38,7 @@ def load_model() -> SentenceTransformer:
     global _model
     if _model is None:
         logger.info("Loading embedding model %s ...", settings.embedding_model)
-        _model = SentenceTransformer(settings.embedding_model, trust_remote_code=True)
+        _model = SentenceTransformer(settings.embedding_model)
         logger.info("Embedding model loaded.")
     return _model
 
