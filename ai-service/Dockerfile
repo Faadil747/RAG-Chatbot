@@ -19,4 +19,8 @@ RUN mkdir -p /app/data
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form (not exec/JSON-array form) so $PORT is actually substituted at
+# container start -- Render (and most PaaS platforms) inject their own PORT
+# value and scan for THAT port, regardless of what's in .env or EXPOSE.
+# Defaults to 8000 to match local/docker-compose usage when PORT is unset.
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
