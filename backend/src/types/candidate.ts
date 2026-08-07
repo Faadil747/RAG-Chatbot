@@ -161,3 +161,16 @@ export interface ChatResponse {
   query?: string | null;
   results?: SearchResult[];
 }
+
+export interface AnalyticsResponse {
+  total: number;
+  averageExperienceYears: number | null;
+  medianExperienceYears: number | null;
+  minExperienceYears: number | null;
+  maxExperienceYears: number | null;
+  topSkills: [string, number][];
+  topRoles: [string, number][];
+  topLocations: [string, number][];
+  availabilityBreakdown: [string, number][];
+  jobBreakdown: [string, number][];
+}

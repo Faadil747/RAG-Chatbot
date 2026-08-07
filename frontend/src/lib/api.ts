@@ -1,4 +1,5 @@
 import type {
+  AnalyticsResponse,
   Candidate,
   CandidateListFilters,
   CandidateListResponse,
@@ -159,4 +160,12 @@ export function sendChatMessage(
 
 export function getChatHistory(sessionId: string): Promise<ChatHistoryResponse> {
   return request<ChatHistoryResponse>(`/chat/${sessionId}/history`);
+}
+
+// ---------------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------------
+
+export function getAnalytics(): Promise<AnalyticsResponse> {
+  return request<AnalyticsResponse>('/analytics');
 }

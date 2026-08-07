@@ -40,20 +40,34 @@ _clients: dict[str, Groq | OpenAI] = {}
 
 def _build_client(provider: str) -> Groq | OpenAI:
     timeout = settings.llm_request_timeout
+    # max_retries=0: the SDK's own built-in retry-on-timeout/error (default
+    # 2 extra attempts, each re-running the full timeout) would silently
+    # multiply every timeout/empty-content case _call_with_fallback already
+    # retries deliberately below -- left at the default, a single slow call
+    # could balloon to 3x this client's timeout before _call_with_fallback
+    # even sees the exception, on top of the retry it then adds itself.
+    # This client is meant to fail fast and let _call_with_fallback decide
+    # what retrying is actually worth.
     if provider == "runpod":
         return OpenAI(
             api_key=settings.runpod_api_key or "ollama",
             base_url=settings.runpod_base_url,
             timeout=timeout,
+            max_retries=0,
         )
     if provider == "deepseek":
         if not settings.deepseek_api_key:
             logger.warning("DEEPSEEK_API_KEY is not set. Calls to deepseek will fail until it is configured.")
-        return OpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url, timeout=timeout)
+        return OpenAI(
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url,
+            timeout=timeout,
+            max_retries=0,
+        )
     if provider == "groq":
         if not settings.groq_api_key:
             logger.warning("GROQ_API_KEY is not set. Calls to groq will fail until it is configured.")
-        return Groq(api_key=settings.groq_api_key, timeout=timeout)
+        return Groq(api_key=settings.groq_api_key, timeout=timeout, max_retries=0)
     raise ValueError(f"Unknown LLM provider: {provider!r}")
 
 
@@ -166,6 +180,7 @@ def _call_with_fallback(
     for i, provider in enumerate(chain):
         is_last = i + 1 == len(chain)
         retry_max_tokens: int | None = None
+        retry_timeout: float | None = None
 
         try:
             return _completion_content(
@@ -175,11 +190,28 @@ def _call_with_fallback(
         except _EmptyCompletionError as exc:
             last_exc = exc
             if exc.finish_reason == "length" and max_tokens < _REASONING_RETRY_MAX_TOKENS:
+                # The model ran out of room -- give the SAME provider more
+                # budget and time before falling back to a different one.
                 retry_max_tokens = min(_REASONING_RETRY_MAX_TOKENS, int(max_tokens * 1.75))
+                retry_timeout = _REASONING_RETRY_TIMEOUT
                 logger.warning(
                     "LLM provider '%s' exhausted its %d-token budget on reasoning with no visible "
                     "output; retrying at %d tokens / %.0fs timeout before falling back",
-                    provider, max_tokens, retry_max_tokens, _REASONING_RETRY_TIMEOUT,
+                    provider, max_tokens, retry_max_tokens, retry_timeout,
+                )
+            else:
+                # Empty content with a finish_reason other than "length"
+                # (e.g. "stop") means the model itself decided it was done
+                # yet produced nothing -- a bigger budget wouldn't fix that,
+                # but it's also not evidence the provider is actually down.
+                # One plain retry with identical parameters catches this
+                # kind of one-off non-deterministic empty response instead
+                # of failing the whole request on what's often a fluke.
+                retry_max_tokens = max_tokens
+                logger.warning(
+                    "LLM provider '%s' returned empty content (finish_reason=%r) with no sign it "
+                    "was a budget issue; retrying once with identical parameters before falling back",
+                    provider, exc.finish_reason,
                 )
         except APITimeoutError as exc:
             last_exc = exc
@@ -189,9 +221,10 @@ def _call_with_fallback(
             # down -- worth one retry with more headroom before giving up.
             if max_tokens < _REASONING_RETRY_MAX_TOKENS:
                 retry_max_tokens = min(_REASONING_RETRY_MAX_TOKENS, int(max_tokens * 1.25))
+                retry_timeout = _REASONING_RETRY_TIMEOUT
                 logger.warning(
                     "LLM provider '%s' timed out; retrying at %d tokens / %.0fs timeout before falling back",
-                    provider, retry_max_tokens, _REASONING_RETRY_TIMEOUT,
+                    provider, retry_max_tokens, retry_timeout,
                 )
         except Exception as exc:  # noqa: BLE001 -- deliberately broad: any provider failure should fall through
             last_exc = exc
@@ -201,7 +234,7 @@ def _call_with_fallback(
                 return _completion_content(
                     provider, system, user,
                     temperature=temperature, max_tokens=retry_max_tokens, model=model, json_mode=json_mode,
-                    timeout=_REASONING_RETRY_TIMEOUT,
+                    timeout=retry_timeout,
                 )
             except Exception as retry_exc:  # noqa: BLE001
                 last_exc = retry_exc

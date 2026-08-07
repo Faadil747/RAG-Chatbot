@@ -7,8 +7,11 @@ import { FloatingAssistantButton } from '@/components/layout/FloatingAssistantBu
 import { CandidateProfileSheet } from '@/components/candidate/CandidateProfileSheet';
 
 const PAGE_SUBTITLES: Record<string, string> = {
-  '/': 'Upload resumes and let AI build structured candidate profiles',
+  '/': 'Your AI-powered recruiting command center',
+  '/upload': 'Upload resumes and let AI build structured candidate profiles',
+  '/jobs': 'Create job listings, then score candidates against them',
   '/candidates': 'Browse, filter, and manage every candidate in your pipeline',
+  '/analytics': 'A live, pool-wide view of skills, experience, and availability',
   '/search': 'Describe who you need in plain English — AI ranks your best matches',
   '/chatbot': 'Chat with your AI recruiting assistant about any candidate',
 };

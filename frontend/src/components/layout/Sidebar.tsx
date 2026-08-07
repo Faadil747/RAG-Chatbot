@@ -1,6 +1,16 @@
 import { NavLink } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Briefcase, FileUp, Users, Sparkles, MessageSquareText, Target, X } from 'lucide-react';
+import {
+  BarChart3,
+  Briefcase,
+  FileUp,
+  Home,
+  Users,
+  Sparkles,
+  MessageSquareText,
+  Target,
+  X,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface NavItem {
@@ -10,9 +20,11 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: 'Candidate Creation', icon: FileUp },
+  { to: '/', label: 'Home', icon: Home },
+  { to: '/upload', label: 'Add Candidates', icon: FileUp },
   { to: '/jobs', label: 'Jobs', icon: Briefcase },
   { to: '/candidates', label: 'Candidate List', icon: Users },
+  { to: '/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/search', label: 'Candidate Search', icon: Sparkles },
   { to: '/chatbot', label: 'AI Chatbot', icon: MessageSquareText },
 ];

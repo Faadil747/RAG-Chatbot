@@ -1,6 +1,6 @@
 # AI-Powered Candidate Search Platform
 
-A premium, AI-first recruiter tool with exactly **four pages** — Candidate Creation, Candidate List, Candidate Search, and an AI Recruitment Chatbot — built around automatic resume parsing, semantic candidate search with explainable ranking, and a RAG-grounded conversational assistant that never answers outside the uploaded candidate database.
+A premium, AI-first recruiter tool — Home, Add Candidates, Jobs, Candidate List, Candidate Search, Analytics, and an AI Recruitment Chatbot — built around automatic resume parsing, job-fit scoring against recruiter-defined requirements, semantic candidate search with explainable ranking, a RAG-grounded conversational assistant that never answers outside the uploaded candidate database (and can answer aggregate/statistical questions over the whole pool, not just single-query search), and a live analytics dashboard.
 
 This document explains, in depth, **how the whole system actually works**: the services, the data model, the resume-parsing pipeline, every AI agent and its prompt, the RAG/retrieval design, the LLM provider chain and keys, the deterministic ranking algorithm, the full API surface, the database schema, and how to run it.
 
@@ -23,6 +23,7 @@ This document explains, in depth, **how the whole system actually works**: the s
 13. [Environment variables](#13-environment-variables)
 14. [Running the project](#14-running-the-project)
 15. [Design decisions & known limitations](#15-design-decisions--known-limitations)
+16. [Deployment (Render + Vercel)](#16-deployment-render--vercel)
 
 ---
 
@@ -42,14 +43,14 @@ flowchart LR
     end
 
     subgraph AIService["AI Service — FastAPI :8000/ai"]
-        Agents["8 focused agents"]
-        Vec[("FAISS index +<br/>candidates_store.json")]
+        Agents["Focused agents:<br/>parsing, skills, ranking,<br/>search, recommendation,<br/>reference resolution, analytics"]
+        Vec[("Qdrant (local, embedded) +<br/>candidates_store.json")]
         LLM["llm_client.py<br/>(single choke point)"]
     end
 
     subgraph Providers["LLM Providers"]
-        RunPod["RunPod / Ollama<br/>(primary)"]
-        DeepSeek["DeepSeek<br/>(fallback)"]
+        DeepSeek["DeepSeek<br/>(primary in production)"]
+        RunPod["RunPod / Ollama<br/>(dev-time alternate)"]
         Groq["Groq<br/>(optional)"]
     end
 
@@ -58,8 +59,8 @@ flowchart LR
     API <-- "candidate rows, chat rows" --> PG
     Agents <--> Vec
     Agents --> LLM
-    LLM -- "try first" --> RunPod
-    LLM -. "on failure, retry once" .-> DeepSeek
+    LLM -- "LLM_PROVIDER (primary)" --> DeepSeek
+    LLM -. "LLM_FALLBACK_PROVIDER,<br/>on failure" .-> RunPod
     LLM -. "explicit opt-in" .-> Groq
 ```
 
@@ -67,9 +68,9 @@ flowchart LR
 |---|---|---|
 | **frontend** | The only UI. Talks exclusively to `backend`. | Nothing persistent — all state lives server-side or in `localStorage` (theme, chat `sessionId`). |
 | **backend** | Thin orchestration + persistence layer. Handles file uploads, candidate CRUD/filtering, and proxies all AI work to `ai-service`. Has **no LLM logic of its own**. | PostgreSQL: candidate records, chat history. Local disk: raw resume files (`backend/uploads/`). |
-| **ai-service** | The AI brain: resume parsing, structured profile generation, embeddings, vector search, deterministic ranking, and the RAG chatbot. | Its own lightweight store: `data/candidates_store.json` (full candidate JSON) + `data/faiss.index` (vectors). Kept in sync by the backend calling `/ai/index` after every upload — this means RAG retrieval never needs a round-trip back to Postgres. |
+| **ai-service** | The AI brain: resume parsing, structured profile generation, embeddings, vector search, deterministic job-fit ranking, pool-wide analytics, and the RAG chatbot. | Its own lightweight store: `data/candidates_store.json` (full candidate JSON) + `data/qdrant/` (a local, embedded Qdrant vector collection). Kept in sync by the backend calling `/ai/index` after every upload or job reassignment — this means RAG retrieval never needs a round-trip back to Postgres. |
 
-Why two separate candidate stores instead of one shared database? The backend's Postgres is the system of record for the product (CRUD, filters, pagination, chat history — things a relational DB is good at). The ai-service's JSON+FAISS store is a purpose-built retrieval index (things a vector store is good at). Keeping them separate, connected only by the `/ai/index` write-through call, means each service can be reasoned about, tested, and scaled independently.
+Why two separate candidate stores instead of one shared database? The backend's Postgres is the system of record for the product (CRUD, filters, pagination, chat history — things a relational DB is good at). The ai-service's JSON+Qdrant store is a purpose-built retrieval index (things a vector store is good at). Keeping them separate, connected only by the `/ai/index` write-through call, means each service can be reasoned about, tested, and scaled independently.
 
 ---
 
@@ -81,7 +82,8 @@ Why two separate candidate stores instead of one shared database? The backend's 
 | Styling / components | Tailwind CSS + a hand-built shadcn-style component library on top of Radix UI primitives (`Dialog`, `Sheet`, `Tabs`, `Select`, `Slider`, `Checkbox`, `Tooltip`, `DropdownMenu`) | Enterprise-SaaS look without a network-dependent CLI generator; Radix gives accessible behavior for free. |
 | Animation | Framer Motion | Page transitions, list stagger, sheet/dialog enter animation, skeleton shimmer. |
 | Frontend state | Zustand (`themeStore`, `chatStore`, `candidateProfileStore`) | Small, no-boilerplate global state for cross-page concerns (theme, chat session, the shared candidate profile Sheet). |
-| Routing | react-router-dom v6 | Client-side routing across the 4 pages. |
+| Routing | react-router-dom v6 | Client-side routing across all pages, code-split per route via `React.lazy`. |
+| Charts | Recharts | Analytics dashboard — light/dark-aware, driven by the app's own HSL design tokens. |
 | Backend runtime | Node.js + TypeScript + Express | Simple, well-understood REST layer. |
 | ORM / database | Prisma + PostgreSQL | Typed queries, migrations, `Json` columns for nested candidate structure. |
 | File uploads | Multer (in-memory, forwarded to ai-service, then written to `uploads/`) | |
@@ -89,8 +91,8 @@ Why two separate candidate stores instead of one shared database? The backend's 
 | AI service runtime | Python 3.11 + FastAPI + Uvicorn | Async, typed (Pydantic v2), fast to iterate on ML-adjacent code. |
 | Resume text extraction | PyMuPDF (primary) → pdfplumber (fallback) for PDF; `python-docx` for DOC/DOCX | |
 | OCR (scanned resumes) | pytesseract + pdf2image | Lighter dependency footprint than PaddleOCR (no native build toolchain); swappable, see [§5](#5-resume-parsing-pipeline). |
-| Embeddings | `sentence-transformers`, model `BAAI/bge-small-en-v1.5` (384-dim) | Small, fast, strong general-purpose retrieval embedding; runs on CPU. |
-| Vector store | FAISS `IndexFlatIP` (cosine similarity via L2-normalized vectors) | Exact search, correct and simple — appropriate for a dev-scale flat index (thousands of candidates). |
+| Embeddings | `sentence-transformers`, model `nomic-ai/nomic-embed-text-v1.5` (768-dim, task-prefixed: `search_document:`/`search_query:`) | Stronger retrieval quality than a generic small model; runs on CPU. |
+| Vector store | Qdrant, local/embedded mode (`QdrantClient(path=...)`, file-based, no server process) | Real vector-DB semantics (upsert-by-id, no manual index rebuild) while staying zero-infra for dev; production runs it on a Render persistent disk, see [Deployment](#16-deployment-render--vercel). |
 | LLM SDKs | `openai` SDK (for RunPod/Ollama and DeepSeek, both OpenAI-compatible) + `groq` SDK (for Groq) | One file (`core/llm_client.py`) owns every LLM call — see [§8](#8-llm-provider-chain-models--keys). |
 | Embedded dev Postgres | [`pgserver`](https://pypi.org/project/pgserver/) (used only when no Docker/Postgres install is available) | Self-contained Postgres binary controllable from Python — zero-install local dev fallback. |
 | Containerization | Docker + `docker-compose.yml` | Postgres + all 3 services wired together for a one-command run. |
@@ -103,24 +105,26 @@ Why two separate candidate stores instead of one shared database? The backend's 
 /
 ├── frontend/                  React + TS + Tailwind SPA
 │   └── src/
-│       ├── pages/             CandidateCreation.tsx, CandidateList.tsx, CandidateSearch.tsx, Chatbot.tsx
+│       ├── pages/             Home, Analytics, CandidateCreation, Jobs, CandidateList, CandidateSearch, Chatbot, NotFound
 │       ├── components/
 │       │   ├── ui/            Hand-built shadcn-style primitives (button, sheet, dialog, table, ...)
 │       │   ├── layout/         Sidebar, Header, AppShell, FloatingAssistantButton, ThemeProvider
 │       │   ├── candidate/      CandidateProfileSheet, ScoreBadge, SkillBadges, ExperienceTimeline
-│       │   ├── chat/           ChatWindow, ChatMessageBubble, ChatInput, CandidateChip
+│       │   ├── chat/           ChatWindow, ChatMessageBubble, ChatSearchResults, ChatInput, CandidateChip
 │       │   ├── search/         SearchResultCard, JustificationPanel
+│       │   ├── jobs/           CreateJobDialog, JobDetailSheet
+│       │   ├── analytics/      StatTile, TopListChart (Recharts)
 │       │   └── upload/         DropzoneUploader, UploadPipelineCard
 │       ├── store/              zustand stores (theme, chat, candidate profile sheet)
-│       ├── hooks/               useChat, useCandidate, useCandidates, useUpload
+│       ├── hooks/               useChat, useCandidate, useCandidates, useUpload, useJobs, useAnalytics
 │       ├── lib/api.ts           Typed fetch wrapper for every backend endpoint
 │       └── types/index.ts       The frontend's copy of the shared API contract
 │
 ├── backend/                   Node/Express orchestration + persistence
-│   ├── prisma/schema.prisma   Candidate / ChatSession / ChatMessage models
+│   ├── prisma/schema.prisma   Candidate / Job / ChatSession / ChatMessage models
 │   └── src/
-│       ├── controllers/       candidatesController, searchController, chatController
-│       ├── routes/             candidates.ts, search.ts, chat.ts, health.ts
+│       ├── controllers/       candidatesController, jobsController, searchController, chatController, analyticsController
+│       ├── routes/             candidates.ts, jobs.ts, search.ts, chat.ts, analytics.ts, health.ts
 │       ├── lib/aiService.ts    Axios client for every /ai/* call, with per-call timeouts
 │       ├── middleware/         upload.ts (multer), errorHandler.ts
 │       └── types/candidate.ts  The backend's copy of the shared API contract
@@ -130,20 +134,23 @@ Why two separate candidate stores instead of one shared database? The backend's 
 │   ├── core/
 │   │   ├── llm_client.py        Single choke point for every LLM call (provider chain, see §8)
 │   │   ├── config.py             All env-driven settings
-│   │   ├── embeddings.py         Sentence-transformer loading + embedding helpers
-│   │   ├── vector_store.py        FAISS IndexFlatIP wrapper
+│   │   ├── embeddings.py         Sentence-transformer loading + embedding helpers (Nomic, task-prefixed)
+│   │   ├── vector_store.py        Local/embedded Qdrant wrapper
 │   │   ├── experience_calc.py     Deterministic experience-years math (never trust the LLM for arithmetic)
 │   │   └── parsing/               pdf_parser.py, docx_parser.py, ocr_parser.py, text_extractor.py
-│   ├── agents/                  One focused module per agent (see §6)
+│   ├── agents/                  One focused module per agent (see §6), incl. ranking_agent (deterministic job-fit
+│   │                             scoring), analytics_agent (pool-wide stats/filters), reference_agent (LLM-backed
+│   │                             follow-up resolution for ambiguous chat references)
 │   ├── memory/conversation_memory.py   In-memory per-session chat state
-│   ├── rag/prompt_builder.py     Assembles the chatbot's system + user prompt
+│   ├── rag/prompt_builder.py     Assembles the chatbot's + analytics' system/user prompts
 │   ├── services/
-│   │   ├── candidate_store.py    The service's own JSON+FAISS "database"
+│   │   ├── candidate_store.py    The service's own JSON+Qdrant "database"
 │   │   └── search_pipeline.py    Shared search logic used by /ai/search and the chat's "new search" path
-│   ├── routers/                 parse.py, index_.py, search.py, chat.py
+│   ├── routers/                 parse.py, index_.py, search.py, chat.py, jobs.py, analytics.py
 │   └── models/                   Pydantic v2 schemas (camelCase on the wire via alias_generator)
 │
-├── resumes/                    ~1,000 sample PDF resumes for testing
+├── docs/CANDIDATE_SCORING_CRITERIA.md   The published, human-readable job-fit scoring rubric
+├── resumes/                    A small demo/seed set of sample PDF resumes for testing
 ├── docker-compose.yml           Postgres + backend + ai-service + frontend, wired together
 └── .env.example                 Root-level compose variables (GROQ/DEEPSEEK keys, model names)
 ```
@@ -220,7 +227,7 @@ flowchart TD
     N --> O["Assemble full Candidate JSON<br/>(uuid4 id)"]
     O --> P["ai-service returns Candidate to backend"]
     P --> Q["Backend: persist to Postgres<br/>+ save file to uploads/"]
-    Q --> R["Backend: POST /ai/index<br/>(embed + FAISS upsert)"]
+    Q --> R["Backend: POST /ai/index<br/>(embed + Qdrant upsert)"]
     R --> S["Candidate is now searchable"]
 ```
 
@@ -251,7 +258,7 @@ flowchart TD
 
 7. **Assembly** — the backend fills in `id` echoing the ai-service's uuid, plus `fileName`, `resumeFileUrl`, `uploadedAt`, writes the raw file to `backend/uploads/{id}.{ext}`, and persists the full record to Postgres.
 
-8. **Indexing** — the backend then calls `POST /ai/index` with the full candidate JSON. The ai-service builds an **embedding text** (name + role + summary + all skills + every experience role/company + technology stack + suitable roles), embeds it, and upserts it into the local FAISS store — from this point the candidate is retrievable by both Search and Chat.
+8. **Indexing** — the backend then calls `POST /ai/index` with the full candidate JSON (plus `jobId`/`jobTitle`/`jobMatchScore` when the candidate is assigned to a job). The ai-service builds an **embedding text** (name + role + summary + all skills + every experience role/company + technology stack + suitable roles), embeds it, and upserts it into the local Qdrant collection — from this point the candidate is retrievable by Search, Chat, and Analytics.
 
 No manual data entry happens anywhere in this pipeline — the recruiter only drags a file in.
 
@@ -291,31 +298,33 @@ Resume Parser (text extraction + OCR fallback)
 Structured Candidate JSON  (agents 1-3 + deterministic math)
      │
      ▼
-Embedding Generation  (BAAI/bge-small-en-v1.5, 384-dim, L2-normalized)
+Embedding Generation  (nomic-embed-text-v1.5, 768-dim, task-prefixed)
      │
      ▼
-FAISS Vector Store  (IndexFlatIP ≈ cosine similarity)  ◄── candidates_store.json (full JSON, keyed by id)
+Qdrant Vector Store  (local/embedded, cosine similarity)  ◄── candidates_store.json (full JSON, keyed by id)
      │
      ▼
-Retriever  (vector similarity shortlist, or conversation-memory resolution for follow-ups)
+Retriever  (vector similarity shortlist, conversation-memory resolution for follow-ups,
+            or -- for aggregate/statistical questions -- the whole pool via the Analytics Agent)
      │
      ▼
-Prompt Builder  (fixed HR-recruiter persona + trimmed candidate context + recent turns)
+Prompt Builder  (fixed HR-recruiter persona + trimmed candidate context + recent turns,
+                 or the Analytics prompt for "how many/average/most common" questions)
      │
      ▼
 Chatbot Agent  (LLM, via llm_client.py's provider chain)
      │
      ▼
-Final grounded response  (reply + suggestions + candidateIds + candidates)
+Final grounded response  (reply + suggestions + candidateIds + candidates + query/results for ranked search turns)
 ```
 
 **Every chatbot response retrieves relevant candidate data *before* generating an answer** — the model is never asked a question without first being handed the actual records it needs to answer honestly. Concretely:
 
 - **Embedding text** (`core/embeddings.py:build_candidate_embedding_text`) — built from `name + currentRole + aiSummary + skills.primary + skills.secondary + (experience role, company)* + technologyStack + suitableRoles`. This is deliberately richer than just the raw resume text: it foregrounds the *judged* signal (AI summary, categorized skills) alongside the raw facts, which makes semantic similarity searches land on relevance rather than surface keyword overlap.
-- **Vector store** (`core/vector_store.py`) — a FAISS `IndexFlatIP` over normalized vectors (so inner product = cosine similarity). It's an intentionally "dumb" flat index — exact, simple, correct — appropriate for the dev-scale (thousands of candidates) this platform targets; a production deployment at much larger scale is a contained swap to an approximate index (or Qdrant, see [§15](#15-design-decisions--known-limitations)).
-- **Retriever**: for a brand-new query ("show me...", "find..."), the query is reformulated (raw query + parsed designation + skills + keywords + industry + location, pipe-joined) and embedded, then FAISS returns a similarity shortlist (top 30), which the deterministic Ranking Agent scores and sorts. For a *follow-up* in an ongoing chat ("compare top 3", "tell me more about the second one"), no new vector search happens at all — the retriever instead resolves candidate ids from **conversation memory** (§10), so the recruiter never has to repeat a name.
-- **Prompt Builder** (`rag/prompt_builder.py`) — assembles a fixed system prompt (the recruiter-assistant persona and its strict grounding rules) plus a *trimmed* JSON of the retrieved candidates (drops `resumeText`/embedding text — not useful for reasoning, just noise/cost) plus the last 8 conversation turns plus the current message, and asks for a fixed JSON response shape.
-- **Grounding enforcement** happens at multiple layers, not just "please don't hallucinate" in the prompt: the Validation Agent gates the domain before any retrieval happens at all; the Prompt Builder physically limits what data the model can see to only the retrieved candidates; and the Recommendation Agent (used for justifications/interview questions/hiring recommendations) is explicitly instructed to state honest concerns rather than paper over a weak match.
+- **Vector store** (`core/vector_store.py`) — Qdrant in local/embedded mode (`QdrantClient(path=...)`, file-based, no server process), storing 768-dim Nomic vectors. Upsert-by-id is native, so there's no manual index-rebuild dance. In production it runs on a single Render instance with a persistent disk (see [Deployment](#16-deployment-render--vercel)).
+- **Retriever**: for a brand-new query ("show me...", "find..."), the query is reformulated (raw query + parsed designation + skills + keywords + industry + location, pipe-joined) and embedded with the `search_query:` prefix, then Qdrant returns a similarity shortlist (top 30), which the deterministic Ranking Agent scores and sorts. For a *follow-up* in an ongoing chat ("compare top 3", "tell me more about the second one", "does she know AWS"), no new vector search happens at all — the retriever resolves candidate ids from **conversation memory** (§10) via fast regex heuristics, falling back to an LLM-backed Reference Resolution Agent for phrasing the heuristics can't confidently parse. For an *aggregate* question ("how many Java developers do we have", "average experience for the DevOps job"), retrieval bypasses ranking entirely and the deterministic Analytics Agent filters/aggregates the **whole** candidate pool instead of a single shortlist.
+- **Prompt Builder** (`rag/prompt_builder.py`) — assembles a fixed system prompt (the recruiter-assistant persona and its strict grounding rules) plus a *trimmed* JSON of the retrieved candidates (drops `resumeText`/embedding text — not useful for reasoning, just noise/cost) plus the last 12 conversation turns plus the current message, and asks for a fixed JSON response shape. Aggregate questions instead get a dedicated prompt built purely from Python-computed statistics, with the model explicitly instructed to phrase them, never recompute them.
+- **Grounding enforcement** happens at multiple layers, not just "please don't hallucinate" in the prompt: the Validation Agent gates the domain before any retrieval happens at all; the Prompt Builder physically limits what data the model can see to only the retrieved candidates (or the exact computed numbers, for analytics); and the Recommendation Agent (used for justifications/interview questions/hiring recommendations) is explicitly instructed to state honest concerns rather than paper over a weak match.
 
 ---
 
@@ -370,7 +379,7 @@ GROQ_API_KEY=your_groq_api_key_here
 GROQ_MODEL=llama-3.3-70b-versatile
 
 # Embeddings (local, no key needed — runs on CPU via sentence-transformers)
-EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
 ```
 
 To swap providers entirely (say, to self-host everything and drop DeepSeek), only `LLM_PROVIDER`/`LLM_FALLBACK_PROVIDER` and the corresponding `*_BASE_URL`/`*_MODEL`/`*_API_KEY` vars need to change — zero code changes anywhere else in the service.
@@ -390,7 +399,7 @@ flowchart TD
     A["Recruiter query, e.g.<br/>'Python developers with 5 years experience in Chennai'"] --> B["Candidate Search Agent (LLM)<br/>→ structured intent"]
     B --> C["Reformulate: raw query + designation<br/>+ skills + keywords + industry + location"]
     C --> D["Embed reformulated query"]
-    D --> E["FAISS similarity search<br/>→ shortlist of 30 candidates"]
+    D --> E["Qdrant similarity search<br/>→ shortlist of 30 candidates"]
     E --> F["Ranking Agent (deterministic)<br/>→ 7 sub-scores → weighted matchScore<br/>→ sort, take top 10"]
     F --> G["Recommendation Agent (LLM)<br/>for ranks 1-3 only"]
     G --> H["SearchResponse:<br/>rank, matchScore, breakdown,<br/>candidate summary, justification"]
@@ -402,7 +411,7 @@ The query is never matched on exact keywords. An LLM call extracts structured in
 
 ### 2. Retrieval
 
-The raw query plus every piece of parsed intent is joined into one reformulated string and embedded, then FAISS returns the 30 nearest candidates by cosine similarity — a shortlist, not the final ranking.
+The raw query plus every piece of parsed intent is joined into one reformulated string and embedded, then Qdrant returns the 30 nearest candidates by cosine similarity — a shortlist, not the final ranking.
 
 ### 3. Explainable, deterministic ranking (`agents/ranking_agent.py`)
 
@@ -510,7 +519,7 @@ Assistant: "I can only answer questions related to the uploaded candidate databa
 | `GET` | `/candidates` | `?search=&skills=&experienceMin=&experienceMax=&location=&designation=&availability=&page=&pageSize=` | `{ candidates: CandidateSummary[], total, page, pageSize }` |
 | `GET` | `/candidates/:id` | — | Full `Candidate` |
 | `GET` | `/candidates/:id/resume` | — | Resume file download |
-| `DELETE` | `/candidates/:id` | — | `{ success: true }` — removes the DB row, the file, and best-effort the FAISS entry |
+| `DELETE` | `/candidates/:id` | — | `{ success: true }` — removes the DB row, the file, and best-effort the Qdrant entry |
 | `POST` | `/search` | `{ query }` | `{ query, totalMatches, results: SearchResult[] }` |
 | `POST` | `/search/analysis` | `{ query, candidateId }` | `Justification` (on-demand, for ranks 4-10) |
 | `POST` | `/chat` | `{ sessionId, message }` | `{ sessionId, reply, suggestions, candidateIds, candidates }` |
@@ -643,7 +652,7 @@ Scalar columns are used for anything the Candidate List page filters/sorts on di
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | |
 | `GROQ_API_KEY` | — | Required only if `LLM_PROVIDER`/`LLM_FALLBACK_PROVIDER` is `groq` |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | |
-| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Runs locally on CPU, no key needed |
+| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | Runs locally on CPU, no key needed |
 | `DATA_DIR` | `./data` | Where `faiss.index` / `vector_ids.json` / `candidates_store.json` live |
 | `CORS_ORIGIN` | `http://localhost:4000` | Only the backend calls this service, so this is the backend's origin |
 
@@ -718,7 +727,7 @@ No local Postgres and no Docker? The [`pgserver`](https://pypi.org/project/pgser
 
 ### Trying it out
 
-`resumes/` at the repo root ships ~1,000 sample PDF resumes — drag a handful onto Candidate Creation, then:
+`resumes/` at the repo root ships a small demo/seed set of sample PDF resumes — drag a handful onto Add Candidates, then:
 
 1. Check they land in Candidate List with correctly parsed experience/skills/rating.
 2. Try a natural-language query on Candidate Search, e.g. *"Python developers with 5 years experience"*.
@@ -729,12 +738,99 @@ No local Postgres and no Docker? The [`pgserver`](https://pypi.org/project/pgser
 
 ## 15. Design decisions & known limitations
 
-- **Vector store**: FAISS only, as specified for the dev stage — an intentionally "dumb" flat index, correct and simple for thousands of candidates. Swapping to an approximate index or Qdrant for larger production scale is a contained change inside `ai-service/core/vector_store.py`; nothing else in the service touches FAISS directly.
-- **Two candidate stores, one write path**: Postgres (backend, system of record) and the ai-service's JSON+FAISS store (retrieval index) are kept in sync purely by the backend calling `/ai/index` after every upload/delete. There is no reverse sync — if the ai-service's store is ever wiped, re-running `/ai/index` for every existing Postgres candidate would rebuild it (not currently automated, since it's outside the spec's scope).
+- **Vector store**: Qdrant in local/embedded mode (`QdrantClient(path=...)`, file-based, single-process file lock, no server) — correct and simple, and genuinely capable (native upsert-by-id, real similarity search), but tied to one process's local disk. That's why the Render deployment (§16) pins ai-service to a single instance with a persistent disk rather than autoscaling it — a multi-instance deployment would need a real hosted Qdrant (or a rewrite onto pgvector) instead.
+- **Two candidate stores, one write path**: Postgres (backend, system of record) and the ai-service's JSON+Qdrant store (retrieval index) are kept in sync purely by the backend calling `/ai/index` after every upload/reassignment/delete. There is no reverse sync — if the ai-service's store is ever wiped, re-running `/ai/index` for every existing Postgres candidate would rebuild it (not currently automated).
 - **OCR**: `pytesseract` + `pdf2image` rather than PaddleOCR, for a lighter dependency footprint (no native build toolchain). Requires the `tesseract` binary (and `poppler` for `pdf2image`) on the host — the provided `Dockerfile` installs both.
 - **LLM instruction-following varies by model.** During development, a smaller/faster model occasionally left `durationMonths` at 0 for undated experience entries despite explicit prompt instructions — this is why §5's experience computation has a deterministic regex backfill on top of the LLM's own extraction, and why a 14B tools-capable model (`qwen2.5:14b`) is the default primary provider. Never trust a single LLM call, unchecked, for anything that has a deterministic ground truth.
 - **Redis**: listed in the original spec as optional for chat session caching, intentionally not implemented — chat *reasoning* state lives in-process in the ai-service (fine for single-process dev), while durable chat *history* is persisted in Postgres by the backend.
-- **No authentication**: single-recruiter internal tool per spec — no login/auth screens anywhere in the stack.
+- **No authentication**: single-recruiter internal tool per spec — no login/auth screens anywhere in the stack. If this is ever deployed somewhere it's reachable by more than trusted users, put it behind a gate (a reverse-proxy basic-auth rule, a VPN, or a real login screen) — the app itself does not check who's asking.
+
+---
+
+## 16. Deployment (Render + Vercel)
+
+Three deploys, in this order: **Render Postgres → Render ai-service → Render backend → Vercel frontend**, then one loop back to fix a circular CORS dependency. Uses DeepSeek as the only LLM provider in production — the `RunPod`/`Groq` providers in §8 are dev-time alternates, not required.
+
+### 16.1 Render — PostgreSQL
+
+1. Render Dashboard → **New → PostgreSQL**. Name it (e.g. `rag-chatbot-db`), pick a region close to where the other two services will run.
+2. Note the **Internal Database URL** (used by the backend service, same-region traffic, no egress cost) and the **External Database URL** (only needed if you ever run `prisma migrate deploy` from your own machine instead of at deploy time).
+
+### 16.2 Render — ai-service (Python/FastAPI)
+
+1. **New → Web Service** → connect this repo → **Root Directory**: `ai-service`.
+2. **Environment**: Docker (the existing `ai-service/Dockerfile` is already deploy-ready — installs `tesseract-ocr`/`poppler-utils` for OCR fallback, installs `requirements.txt`, runs `uvicorn main:app --host 0.0.0.0 --port 8000`).
+3. **Add a Persistent Disk**, mount path `/app/data`, start at 1GB and grow as the candidate pool grows. This holds the local Qdrant collection + `candidates_store.json` — without it, every deploy/restart wipes all indexed candidates (Render's default filesystem is ephemeral). Keep this service at **exactly one instance** — no autoscaling, no zero-downtime rolling deploys — the local Qdrant file lock isn't safe to share across replicas.
+4. **Environment variables**:
+   ```
+   PORT=8000
+   LLM_PROVIDER=deepseek
+   LLM_FALLBACK_PROVIDER=deepseek
+   DEEPSEEK_API_KEY=<your real DeepSeek key>
+   DEEPSEEK_MODEL=deepseek-v4-flash
+   DEEPSEEK_BASE_URL=https://api.deepseek.com
+   LLM_REQUEST_TIMEOUT=40
+   EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+   DATA_DIR=/app/data
+   CORS_ORIGIN=<filled in after step 16.3 — the backend's Render URL>
+   ```
+   Leave `RUNPOD_*`/`GROQ_*` unset entirely. `core/config.py`'s `Settings.llm_provider` default is still `"runpod"` (a dev-time default, intentionally not changed since local dev still wants RunPod-primary) — the env var above overrides it, but if this service ever starts up giving 404s from a RunPod URL, the first thing to check is whether `LLM_PROVIDER=deepseek` actually got set.
+5. **Health check path**: `/ai/health`.
+6. Deploy. The first boot is slow — it downloads the Nomic embedding model. Watch the logs for `"AI service ready. N candidates indexed."` before moving on.
+7. Copy this service's Render URL (e.g. `https://rag-chatbot-ai.onrender.com`) — the backend needs it next.
+
+### 16.3 Render — backend (Node/Express)
+
+1. **New → Web Service** → this repo → **Root Directory**: `backend`.
+2. **Environment**: Docker (`backend/Dockerfile` is already deploy-ready — multi-stage build, `prisma generate`, `VOLUME /app/uploads`).
+3. **Add a Persistent Disk**, mount path `/app/uploads` — original resume files live here and are served back via `GET /api/candidates/:id/resume`; without a persistent disk they vanish on every restart.
+4. **Environment variables**:
+   ```
+   PORT=4000
+   DATABASE_URL=<Render Postgres Internal Database URL, from §16.1>
+   AI_SERVICE_URL=<ai-service's Render URL, from §16.2>
+   UPLOAD_DIR=/app/uploads
+   CORS_ORIGIN=http://localhost:5173
+   ```
+   (`CORS_ORIGIN` is a placeholder for now — it's set for real in step 16.5, after the Vercel URL exists. `CORS_ORIGIN` accepts a comma-separated list and a `*` wildcard segment, e.g. `https://your-app.vercel.app,https://*.vercel.app`, so every Vercel preview deploy is covered alongside the production domain.)
+5. **Start command**: override it to run pending migrations before boot —
+   ```
+   sh -c "npx prisma migrate deploy && node dist/index.js"
+   ```
+6. **Health check path**: `/api/health`.
+7. Now go back to step 16.2 and set that service's `CORS_ORIGIN` to *this* service's Render URL (ai-service only ever needs to allow the backend's origin — the frontend never calls ai-service directly, only through the backend).
+8. Deploy. Confirm the logs show Express listening with no Prisma connection errors, and copy this service's Render URL — the frontend needs it next.
+
+### 16.4 Vercel — frontend
+
+1. **New Project** → import this repo → **Root Directory**: `frontend`.
+2. Framework preset: **Vite**. Build command: `npm run build` (runs `tsc -b && vite build`). Output directory: `dist`.
+3. **Environment variable**:
+   ```
+   VITE_API_BASE_URL=<backend's Render URL, from §16.3>/api
+   ```
+4. Deploy. Copy the production URL Vercel assigns.
+
+### 16.5 Close the CORS loop
+
+Go back to the **backend** service (§16.3) and update `CORS_ORIGIN` to the real Vercel URL(s), e.g.:
+```
+CORS_ORIGIN=https://your-app.vercel.app,https://*.vercel.app
+```
+Save — Render redeploys the backend automatically on an env var change. This is the one genuinely circular step in the whole runbook: the backend needs to know the frontend's URL, but the frontend needs the backend's URL to even be created.
+
+### 16.6 Post-deploy smoke test
+
+- [ ] `GET <ai-service-url>/ai/health` → `{"status":"ok","candidatesIndexed":N}`
+- [ ] `GET <backend-url>/api/health` → 200
+- [ ] Open the Vercel URL → **Home** page renders, sidebar shows all 7 items (Home, Add Candidates, Jobs, Candidate List, Analytics, Candidate Search, AI Chatbot).
+- [ ] Create a Job on **Jobs**, reload the page, confirm it's still there (Postgres write survived).
+- [ ] Upload 1-2 resumes from the pruned `resumes/` demo set on **Add Candidates** → confirm the full pipeline (parse → score → index) completes — this is the slowest path (3+ sequential LLM calls) and the first real DeepSeek-in-production test.
+- [ ] **Candidate List** → the uploaded candidate appears, resume download link works (tests the backend's persistent uploads disk).
+- [ ] **Candidate Search** → a natural-language query returns ranked, scored results.
+- [ ] **AI Chatbot** → ask about a candidate, then an analytics-style question ("how many candidates do we have") → confirms both the RAG chat path and the chat-mediated analytics path work.
+- [ ] **Analytics** → the dashboard loads stat tiles + charts with numbers matching what was just uploaded (tests the direct `/ai/analytics` → `/api/analytics` path).
+- [ ] Toggle dark/light mode → persists across the new pages too.
+- [ ] Resize to a mobile width → the sidebar collapses to a hamburger drawer on every page, including the new ones.
+- [ ] Check both services' Render logs for unexpected 4xx/5xx during the walkthrough above.
 - **LLM provider is fully pluggable** by design: every call funnels through `ai-service/core/llm_client.py`, so adding, removing, or reordering providers (as this project did twice — Groq → DeepSeek → RunPod-primary-with-DeepSeek-fallback) never requires touching an agent, a router, or a prompt.
-#   R A G - C h a t b o t  
- 

@@ -13,7 +13,7 @@ app.listen(env.port, () => {
   console.log(`Backend listening on http://localhost:${env.port}`);
   console.log(`  -> ai-service: ${env.aiServiceUrl}`);
   console.log(`  -> uploads dir: ${env.uploadDir}`);
-  console.log(`  -> CORS origin: ${env.corsOrigin}`);
+  console.log(`  -> CORS origins: ${env.corsOrigins.join(", ")}`);
 });
 
 process.on("unhandledRejection", (reason) => {

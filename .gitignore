@@ -30,3 +30,4 @@ backend/uploads/*
 .idea/
 .DS_Store
 Thumbs.db
+*.code-workspace

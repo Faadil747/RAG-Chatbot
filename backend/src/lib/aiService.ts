@@ -3,6 +3,7 @@ import FormData from "form-data";
 import { env } from "../config/env";
 import { ApiError } from "../utils/ApiError";
 import {
+  AnalyticsResponse,
   ChatResponse,
   Justification,
   JobIntent,
@@ -142,12 +143,27 @@ export async function chat(
   message: string
 ): Promise<ChatResponse> {
   try {
-    const { data } = await client.post<ChatResponse>("/ai/chat", {
-      sessionId,
-      message,
-    });
+    const { data } = await client.post<ChatResponse>(
+      "/ai/chat",
+      { sessionId, message },
+      // A chat turn can involve several sequential LLM calls (intent
+      // parsing, reference resolution, justification, the reply itself),
+      // each of which may need ai-service's own slow-provider retry --
+      // give it the same headroom as /ai/parse rather than the 60s default,
+      // which a single retried call alone can approach.
+      { timeout: 180_000 }
+    );
     return data;
   } catch (err) {
     throw toApiError(err, "/ai/chat");
+  }
+}
+
+export async function getAnalytics(): Promise<AnalyticsResponse> {
+  try {
+    const { data } = await client.get<AnalyticsResponse>("/ai/analytics");
+    return data;
+  } catch (err) {
+    throw toApiError(err, "/ai/analytics");
   }
 }
